@@ -129,6 +129,27 @@ with torch.no_grad():
 errs["text_shift_invariance"] = ((h1 - h2)[b["txt_valid"]].abs().max() / h1.abs().max()).item()
 ok &= errs["text_shift_invariance"] < 1e-4
 
+# 5. image cache: query_bank(encode_images(batch)) == the image_first forward (readout and image tokens)
+for K in (0, 4):
+    cfg, net, ds = make(K, "block_bidir")
+    b = batch_of(ds, cfg, "i2t")
+    with torch.no_grad():
+        feats = net.image_features(b["pixel_values"], b["grid_thw"])
+        ref = net(b, feats, "i2t")
+        bank = net.encode_images(b, feats)
+        o = net.query_bank(bank, b, b["q_img"])
+    errs[f"bank_K{K}_readout"] = ((o["r"] - ref["r"]).abs().max() / ref["r"].abs().max()).item()
+    errs[f"bank_K{K}_image_tokens"] = ((o["vis"] - ref["vis"]).abs().max() / ref["vis"].abs().max()).item()
+    # one request shared by every image (q_img=None): request 0 of image 0 asked against image 0 and image 1
+    one = dict(txt_ids=b["txt_ids"][:1], txt_valid=b["txt_valid"][:1], txt_pos=b["txt_pos"][:, :1])
+    with torch.no_grad():
+        o1 = net.query_bank(bank, one)
+        b2 = dict(b, txt_ids=b["txt_ids"][:1].expand(2, -1), txt_valid=b["txt_valid"][:1].expand(2, -1),
+                  txt_pos=b["txt_pos"][:, :1].expand(-1, 2, -1), q_img=torch.tensor([0, 1], device=dev))
+        r2 = net(b2, feats, "i2t")["r"]
+    errs[f"bank_K{K}_one_request_all_images"] = ((o1["r"] - r2).abs().max() / r2.abs().max()).item()
+    ok &= all(errs[f"bank_K{K}_{n}"] < 1e-5 for n in ("readout", "image_tokens", "one_request_all_images"))
+
 for k, x in errs.items():
     print(f"{k:34s} {x:.3e}")
 print("ALL_OK" if ok else "FAIL")

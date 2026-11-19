@@ -53,7 +53,13 @@ def load_ckpt(path_or_state, net, heads):
         res = set_peft_model_state_dict(net.hf, sd["lora"])
         bad = [k for k in getattr(res, "unexpected_keys", []) if "lora" in k]
         assert not bad, f"unexpected LoRA keys: {bad[:5]}"
-    heads.load_state_dict(sd["heads"])
+    missing, unexpected = heads.load_state_dict(sd["heads"], strict=False)
+    assert not unexpected, f"unexpected head keys: {unexpected[:5]}"
+    new = ("dec.", "dc_", "do_q", "do_k", "dpres", "dedge", "diou")
+    bad = [k for k in missing if not k.startswith(new)]
+    assert not bad, f"missing head keys: {bad[:5]}"
+    if missing:   # an older checkpoint without the two-way decoder: the new parts keep their (identity) init
+        print(f"[load] {len(missing)} new head tensors not in the checkpoint (two-way decoder): kept at init")
     return sd
 
 

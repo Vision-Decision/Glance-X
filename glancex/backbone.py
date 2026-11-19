@@ -16,7 +16,8 @@ import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from ._layers import _gdn_core, _gdn_mix, _qkv, attn_forward, build_masks, gdn_forward, sdpa
+from ._layers import (_gdn_core, _gdn_mix, _qkv, attn_block, attn_forward, attn_prefix, block_mask, build_masks,
+                      gdn_block, gdn_forward, gdn_prefix, prefix_mask, sdpa)
 
 MODES = ("i2t", "t2i", "bi")
 ALIASES = {"image_first": "i2t", "text_first": "t2i", "joint": "bi", "i2t": "i2t", "t2i": "t2i", "bi": "bi"}
@@ -149,11 +150,7 @@ class GlanceXBackbone(torch.nn.Module):
         mode = canonical_mode(mode)
         cfg = self.cfg
         emb = self.lm.embed_tokens
-        xi = emb(batch["img_ids"])
-        feats = torch.cat(img_feats, 0) if isinstance(img_feats, (list, tuple)) else img_feats   # [F,D], F >= #patches
-        im = batch["img_mask"]
-        idx = (im.flatten().long().cumsum(0) - 1).clamp(min=0).view_as(im)  # i-th image patch <- i-th feature row
-        xi = torch.where(im[..., None], feats[idx].to(xi.dtype), xi)
+        xi = self._embed_images(batch, img_feats)                            # i-th image patch <- i-th feature row
         xt = emb(batch["txt_ids"])
         iv, tv = batch["img_valid"], batch["txt_valid"]
         ipos, tpos = batch["img_pos"], batch["txt_pos"]
@@ -171,6 +168,7 @@ class GlanceXBackbone(torch.nn.Module):
             hp, hq = self.lm.norm(hp), self.lm.norm(hq)
             vis = self._gather_vis(hp, img_flag, batch["vis_valid"])
             vis_index = q_img
+            q_valid = qv
         else:
             seg_img = (xi[q_img], iv[q_img], ipos[:, q_img], img_flag[q_img])
             if mode == "t2i":
@@ -191,8 +189,71 @@ class GlanceXBackbone(torch.nn.Module):
             hq = self.lm.norm(hq)
             vis = self._gather_vis(hq, flags[0], batch["vis_valid"][q_img])
             vis_index = torch.arange(M, device=xt.device)
+            q_valid = qv & ~flags[0]                                         # the block's non-image tokens
         r = hq[torch.arange(M, device=hq.device), last]
-        return dict(r=r, vis=vis, vis_index=vis_index)
+        # q_tok / q_valid / r_idx: the request's tokens (for the two-way decoder)
+        return dict(r=r, vis=vis, vis_index=vis_index, q_tok=hq, q_valid=q_valid, r_idx=last)
+
+    # ------------------------------------------------------------------ image cache (image_first)
+    def _embed_images(self, batch, img_feats):
+        xi = self.lm.embed_tokens(batch["img_ids"])
+        feats = torch.cat(img_feats, 0) if isinstance(img_feats, (list, tuple)) else img_feats
+        im = batch["img_mask"]
+        idx = (im.flatten().long().cumsum(0) - 1).clamp(min=0).view_as(im)
+        return torch.where(im[..., None], feats[idx].to(xi.dtype), xi)
+
+    @torch.no_grad()
+    def encode_images(self, batch, img_feats):
+        """image_first prefix only (it never depends on a request): every layer's state for every image.
+        -> dict(states [per fusion layer: GDN (S, conv tail) | attention (K, V)], p_valid, vis [B,N,D])."""
+        xi = self._embed_images(batch, img_feats)
+        iv, ipos = batch["img_valid"], batch["img_pos"]
+        layers = list(zip(self.lm.layers, self.layer_types))
+        if self.K:
+            xi = self.unimodal(xi, iv, ipos, layers[: self.K])
+        rope_p, mask_p = self.rope(xi, ipos), prefix_mask(iv)
+        states = []
+        for layer, ltype in layers[self.K:]:
+            h = layer.input_layernorm(xi)
+            if ltype == "linear_attention":
+                o, st = gdn_prefix(layer.linear_attn, h, iv)
+            else:
+                o, st = attn_prefix(layer.self_attn, h, rope_p, mask_p)
+            xi = xi + o
+            xi = xi + layer.mlp(layer.post_attention_layernorm(xi))
+            states.append(st)
+        vis = self._gather_vis(self.lm.norm(xi), batch["img_mask"], batch["vis_valid"])
+        return dict(states=states, p_valid=iv, vis=vis)
+
+    @torch.no_grad()
+    def query_bank(self, bank, batch, q_img=None):
+        """Request blocks against cached image states (image_first). batch: txt_ids / txt_valid / txt_pos [M,Lt].
+        q_img [M]: image of each request; None = request m asks image m. A single request row is computed once
+        and shared by every image."""
+        cfg = self.cfg
+        xt, tv, tpos = self.lm.embed_tokens(batch["txt_ids"]), batch["txt_valid"], batch["txt_pos"]
+        layers = list(zip(self.lm.layers, self.layer_types))
+        if self.K:
+            xt = self.unimodal(xt, tv, tpos, layers[: self.K])
+        n_img = bank["p_valid"].shape[0]
+        if q_img is None and xt.shape[0] == 1 and n_img > 1:                   # one request, every image
+            xt, tv, tpos = xt.expand(n_img, -1, -1), tv.expand(n_img, -1), tpos.expand(-1, n_img, -1)
+        M = xt.shape[0]
+        xq, qv, qpos, _, last = pack([(xt, tv, tpos, None)], max(tv.shape[1], cfg.pad_txt_block_to))
+        p_rows = bank["p_valid"] if q_img is None else bank["p_valid"][q_img]
+        rope_q, mask_q = self.rope(xq, qpos), block_mask(p_rows, qv, cfg.bidir_block_mask)
+        for (layer, ltype), st in zip(layers[self.K:], bank["states"]):
+            h = layer.input_layernorm(xq)
+            if ltype == "linear_attention":
+                o = gdn_block(layer.linear_attn, h, st, q_img)
+            else:
+                o = attn_block(layer.self_attn, h, rope_q, mask_q, st, q_img)
+            xq = xq + o
+            xq = xq + layer.mlp(layer.post_attention_layernorm(xq))
+        hq = self.lm.norm(xq)
+        ar = torch.arange(M, device=hq.device)
+        return dict(r=hq[ar, last], vis=bank["vis"], vis_index=ar if q_img is None else q_img, q_tok=hq, q_valid=qv,
+                    r_idx=last)
 
     @staticmethod
     def _gather_vis(h, flag, vis_valid):

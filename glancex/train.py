@@ -37,7 +37,8 @@ def forward_batch(net, heads, batch, train=True):
                    center_t=union_center_target(batch["boxes"], batch["n_boxes"], centers_q, valid_q, grid_q),
                    obj_t=obj_target(batch["boxes"], batch["n_boxes"], centers_q, valid_q, net.cfg.obj_shrink),
                    valid=valid_q)
-    out = heads(o["r"], o["vis"], rows_valid, rows_centers, o["vis_index"], sel_idx=sel)
+    out = heads(o["r"], o["vis"], rows_valid, rows_centers, o["vis_index"], sel_idx=sel, q_tok=o["q_tok"],
+                q_valid=o["q_valid"], r_idx=o["r_idx"])
     return out, tgt, (o, rows_valid, rows_centers)
 
 

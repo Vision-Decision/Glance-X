@@ -1,0 +1,18 @@
+{
+ "model_id": "Qwen/Qwen3.5-4B-Base",
+ "bidir_k": 8,
+ "decoder_layers": 4,
+ "decoder_dim": 512,
+ "decoder_heads": 8,
+ "init_ckpt": "outputs/glance-x-4b-k8/ckpt_final.pt",
+ "train_file": "data/train.jsonl",
+ "image_root": "data/images/coco_train2014",
+ "mode_probs": "1,0,0",
+ "i2t_q_per_image": 24,
+ "images_per_step": 8,
+ "epochs": 1.0,
+ "lr": 0.0001,
+ "lr_heads": 0.0005,
+ "min_orig_frac": 0.34,
+ "out_dir": "outputs/two-way-dec4"
+}

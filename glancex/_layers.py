@@ -48,22 +48,34 @@ def _gdn_core(m, conv_out, z, beta, g, init):
     return m.out_proj(o), S
 
 
-def gdn_forward(m, xp, xq, p_valid, q_img):
+def gdn_prefix(m, xp, p_valid):
+    """Prefix half of a Gated DeltaNet layer. -> output, state (final recurrent state S, last k-1 conv inputs)."""
     K = m.conv_kernel_size
     w = m.conv1d.weight  # [C,1,K]
-    # ---- prefix (left padded; zero the pads so they leave the state untouched) ----
-    xp = xp * p_valid[..., None].to(xp.dtype)
+    xp = xp * p_valid[..., None].to(xp.dtype)               # left padded: zero the pads so they leave the state untouched
     mixed, z, beta, g = _gdn_mix(m, xp)
     Lp = mixed.shape[-1]
     conv = F.conv1d(mixed.to(w.dtype), w, m.conv1d.bias, padding=K - 1, groups=mixed.shape[1])[..., :Lp]
     op, S = _gdn_core(m, conv, z, beta, g, None)
-    tail = mixed[:, :, Lp - (K - 1):]                      # last k-1 conv inputs of each prefix
-    # ---- question blocks: continue from the prefix state ----
+    return op, (S, mixed[:, :, Lp - (K - 1):])
+
+
+def gdn_block(m, xq, state, q_img=None):
+    """Block half: every block continues from its prefix's state. q_img=None: block m belongs to prefix m."""
+    S, tail = state
+    if q_img is not None:
+        S, tail = S[q_img], tail[q_img]
+    w = m.conv1d.weight
     mixed_q, zq, beta_q, g_q = _gdn_mix(m, xq)
-    mq = torch.cat([tail[q_img], mixed_q], dim=-1).to(w.dtype)
+    mq = torch.cat([tail, mixed_q], dim=-1).to(w.dtype)
     conv_q = F.conv1d(mq, w, m.conv1d.bias, padding=0, groups=mq.shape[1])  # -> exactly Tq outputs
-    oq, _ = _gdn_core(m, conv_q, zq, beta_q, g_q, S[q_img].contiguous())
-    return op, oq
+    oq, _ = _gdn_core(m, conv_q, zq, beta_q, g_q, S.contiguous())
+    return oq
+
+
+def gdn_forward(m, xp, xq, p_valid, q_img):
+    op, state = gdn_prefix(m, xp, p_valid)
+    return op, gdn_block(m, xq, state, q_img)
 
 
 def _qkv(m, x, cos, sin):
@@ -90,33 +102,51 @@ def sdpa(q, k, v, mask, scale):
     return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=scale)
 
 
-def attn_forward(m, xp, xq, rope_p, rope_q, mask_p, mask_q, q_img):
+def attn_prefix(m, xp, rope_p, mask_p):
+    """Prefix half of an attention layer. -> output, state (the prefix keys and values)."""
     B, Lp, _ = xp.shape
-    M, Tq, _ = xq.shape
     qp, kp, vp, gp = _qkv(m, xp, *rope_p)
     op = sdpa(qp, kp, vp, mask_p, m.scaling)
-    op = op.transpose(1, 2).reshape(B, Lp, -1) * torch.sigmoid(gp)
+    return m.o_proj(op.transpose(1, 2).reshape(B, Lp, -1) * torch.sigmoid(gp)), (kp, vp)
+
+
+def attn_block(m, xq, rope_q, mask_q, state, q_img=None):
+    """Block half: each block attends to its prefix's keys + its own block. q_img=None: block m <-> prefix m."""
+    kp, vp = state
+    if q_img is not None:
+        kp, vp = kp[q_img], vp[q_img]
+    M, Tq, _ = xq.shape
     qq, kq, vq, gq = _qkv(m, xq, *rope_q)
-    k_all = torch.cat([kp[q_img], kq], dim=2)
-    v_all = torch.cat([vp[q_img], vq], dim=2)
-    oq = sdpa(qq, k_all, v_all, mask_q, m.scaling)
-    oq = oq.transpose(1, 2).reshape(M, Tq, -1) * torch.sigmoid(gq)
-    return m.o_proj(op), m.o_proj(oq)
+    oq = sdpa(qq, torch.cat([kp, kq], dim=2), torch.cat([vp, vq], dim=2), mask_q, m.scaling)
+    return m.o_proj(oq.transpose(1, 2).reshape(M, Tq, -1) * torch.sigmoid(gq))
 
 
-def build_masks(p_valid, q_valid, q_img, mode):
-    """Boolean SDPA masks (True = may attend)."""
-    B, Lp = p_valid.shape
+def attn_forward(m, xp, xq, rope_p, rope_q, mask_p, mask_q, q_img):
+    op, state = attn_prefix(m, xp, rope_p, mask_p)
+    return op, attn_block(m, xq, rope_q, mask_q, state, q_img)
+
+
+def prefix_mask(p_valid):
+    """Causal mask over a left-padded prefix (pads attend to themselves, so no row is empty)."""
+    Lp = p_valid.shape[1]
+    causal = torch.ones(Lp, Lp, dtype=torch.bool, device=p_valid.device).tril()
+    eye = torch.eye(Lp, dtype=torch.bool, device=p_valid.device)
+    return ((causal[None] & p_valid[:, None, :]) | eye[None])[:, None]
+
+
+def block_mask(p_valid_rows, q_valid, mode):
+    """Mask of each block over [its prefix's keys | its own tokens]. p_valid_rows [M,Lp] (the prefix of each block)."""
     M, Tq = q_valid.shape
-    dev = p_valid.device
-    causal = torch.ones(Lp, Lp, dtype=torch.bool, device=dev).tril()
-    eye_p = torch.eye(Lp, dtype=torch.bool, device=dev)
-    mask_p = (causal[None] & p_valid[:, None, :]) | eye_p[None]          # pads attend to themselves (no NaN)
+    Lp = p_valid_rows.shape[1]
+    dev = q_valid.device
     if mode == "block_bidir":
         within = q_valid[:, None, :].expand(M, Tq, Tq)
     else:
         within = torch.ones(Tq, Tq, dtype=torch.bool, device=dev).tril()[None] & q_valid[:, None, :]
     within = within | torch.eye(Tq, dtype=torch.bool, device=dev)[None]
-    to_prefix = p_valid[q_img][:, None, :].expand(M, Tq, Lp)
-    mask_q = torch.cat([to_prefix, within], dim=-1)
-    return mask_p[:, None], mask_q[:, None]
+    return torch.cat([p_valid_rows[:, None, :].expand(M, Tq, Lp), within], dim=-1)[:, None]
+
+
+def build_masks(p_valid, q_valid, q_img, mode):
+    """Boolean SDPA masks (True = may attend)."""
+    return prefix_mask(p_valid), block_mask(p_valid[q_img], q_valid, mode)

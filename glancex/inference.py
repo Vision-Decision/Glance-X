@@ -47,6 +47,38 @@ class Result:
                 f"confidence={self.confidence:.3f}, n_boxes={len(self.boxes)})")
 
 
+@dataclass
+class ImageBank:
+    """Cached image_first state of N images (GlanceX.encode). Searching it runs only the request's short block per
+    image (+ the two-way decoder), not the vision tower or the image prefix."""
+    data: dict            # states (per fusion layer), p_valid [N,Lp], vis [N,640,D]
+    vis_valid: torch.Tensor
+    centers: torch.Tensor
+    orig_wh: list
+    device: str
+
+    def __len__(self):
+        return len(self.orig_wh)
+
+    def slice(self, a, b):
+        st = [tuple(t[a:b] for t in s) for s in self.data["states"]]
+        d = dict(states=st, p_valid=self.data["p_valid"][a:b], vis=self.data["vis"][a:b])
+        return ImageBank(d, self.vis_valid[a:b], self.centers[a:b], self.orig_wh[a:b], self.device)
+
+    @property
+    def nbytes(self):
+        ts = [t for s in self.data["states"] for t in s] + [self.data["vis"]]
+        return sum(t.numel() * t.element_size() for t in ts)
+
+    @staticmethod
+    def concat(banks):
+        st = [tuple(torch.cat(ts, 0) for ts in zip(*layer)) for layer in zip(*[b.data["states"] for b in banks])]
+        d = dict(states=st, p_valid=torch.cat([b.data["p_valid"] for b in banks]),
+                 vis=torch.cat([b.data["vis"] for b in banks]))
+        return ImageBank(d, torch.cat([b.vis_valid for b in banks]), torch.cat([b.centers for b in banks]),
+                         [wh for b in banks for wh in b.orig_wh], banks[0].device)
+
+
 def _default_device():
     if torch.cuda.is_available():
         return "cuda"
@@ -204,13 +236,68 @@ class GlanceX:
             return self._run([it], mode, obj_thr, replica=r)
         return self._sharded(len(requests), part)
 
+    # ------------------------------------------------------------------ image cache
+    @torch.no_grad()
+    def encode(self, images, batch_size=32):
+        """Encode images once (image_first prefix, request-independent) -> ImageBank for fast search()."""
+        from .fast import IMG_LEN, N_VIS
+        cfg = self.cfg.update(dict(pad_img_to=IMG_LEN))
+        device, net, _ = self.replicas[0]
+        banks = []
+        for i in range(0, len(images), batch_size):
+            items = self._items(images[i:i + batch_size], [["x"]] * len(images[i:i + batch_size]), device=device)
+            b = to_dev({k: v for k, v in collate(items, self.tok, cfg, "i2t").items() if k != "meta"}, device)
+            assert b["img_ids"].shape[1] == IMG_LEN, "encode() supports max_vis_tokens <= 640"
+            feats = net.image_features(b["pixel_values"], b["grid_thw"])
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                d = net.encode_images(b, feats)
+            n = b["vis_valid"].shape[1]
+            pad = lambda t: torch.cat([t, t.new_zeros((t.shape[0], N_VIS - n) + tuple(t.shape[2:]))], 1)  # noqa: E731
+            d["vis"] = pad(d["vis"])
+            banks.append(ImageBank(d, pad(b["vis_valid"]), pad(b["centers"]), [it["orig_wh"] for it in items], device))
+        return ImageBank.concat(banks) if len(banks) > 1 else banks[0]
+
+    @torch.no_grad()
+    def _search_bank(self, request, bank, obj_thr, chunk=256):
+        device, net, heads = self.replicas[0]
+        ids = self.tok.text(request)
+        L = max(len(ids), self.cfg.pad_txt_to, 1)
+        txt = torch.full((1, L), self.tok.pad, dtype=torch.long)
+        txt[0, L - len(ids):] = torch.tensor(ids)
+        tv = torch.zeros(1, L, dtype=torch.bool)
+        tv[0, L - len(ids):] = True
+        tpos = torch.zeros(3, 1, L, dtype=torch.long)
+        tpos[:, 0, L - len(ids):] = self.cfg.text_pos0 + torch.arange(len(ids))
+        tb = to_dev(dict(txt_ids=txt, txt_valid=tv, txt_pos=tpos), device)
+        res = []
+        for a in range(0, len(bank), chunk):
+            bk = bank.slice(a, min(len(bank), a + chunk))
+            with torch.autocast("cuda", dtype=torch.bfloat16):
+                o = net.query_bank(bk.data, tb)
+            out = heads(o["r"], o["vis"], bk.vis_valid, bk.centers, o["vis_index"], q_tok=o["q_tok"],
+                        q_valid=o["q_valid"], r_idx=o["r_idx"])
+            multi = heads.decode_multi(o["r"], o["vis"], bk.vis_valid, bk.centers, o["vis_index"], out, thr=obj_thr)
+            p, piou = out["presence_logit"].float().sigmoid().cpu(), out["iou_logit"].float().sigmoid().cpu()
+            box = out["box_pred"].float().clamp(0, 1).cpu()
+            for k, (W, H) in enumerate(bk.orig_wh):
+                s = torch.tensor([W, H, W, H], dtype=torch.float)
+                mb, ms = multi[k]
+                res.append(Result(request=request, present_prob=float(p[k]), box=(box[k] * s).tolist(),
+                                  iou_prob=float(piou[k]), boxes=(mb.float() * s).tolist(),
+                                  box_scores=ms.float().tolist(), image_index=a + k))
+        return res
+
     def find(self, image, request, mode="joint", obj_thr=0.5, max_vis_tokens=None):
         """One image, one request. `joint` lets the image and the request read each other (most accurate)."""
         return self.ask(image, [request], mode=mode, obj_thr=obj_thr, max_vis_tokens=max_vis_tokens)[0]
 
     def search(self, request, images, mode="text_first", batch_size=64, obj_thr=0.5, sort=True, max_vis_tokens=None):
         """One request over many images. Returns one Result per image (`image_index` says which), ranked by
-        confidence when sort=True. With several GPUs the images are split across them and run concurrently."""
+        confidence when sort=True. With several GPUs the images are split across them and run concurrently.
+        images can be an ImageBank (from encode()): then only the request's block runs per image (image_first)."""
+        if isinstance(images, ImageBank):
+            res = self._search_bank(request, images, obj_thr)
+            return sorted(res, key=lambda r: -r.confidence) if sort else res
         def part(r, a, b):
             out = []
             for i in range(a, b, batch_size):

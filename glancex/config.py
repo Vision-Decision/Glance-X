@@ -33,6 +33,10 @@ class Config:
     w_obj: float = 1.0                   # multi-box objectness
     obj_shrink: float = 0.5              # objectness positive: patch centre inside the central share of a target box
     max_targets: int = 16
+    # two-way decoder (0 = none): light bidirectional fusion on the cacheable image tokens + the request tokens
+    decoder_layers: int = 0
+    decoder_dim: int = 512
+    decoder_heads: int = 8
     # --- data ---
     train_file: str = "data/train.jsonl"
     image_root: str = "data/images"
