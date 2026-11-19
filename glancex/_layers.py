@@ -78,16 +78,28 @@ def _qkv(m, x, cos, sin):
     return q, k, v, gate
 
 
+def sdpa(q, k, v, mask, scale):
+    """Masked attention with grouped KV heads. Repeating K/V to the query heads (instead of enable_gqa=True) lets
+    PyTorch use the memory-efficient kernel with a boolean mask; enable_gqa + mask falls back to the slow math
+    kernel. Same result."""
+    g = q.shape[1] // k.shape[1]
+    if g > 1:
+        B, H, L, D = k.shape
+        k = k[:, :, None].expand(B, H, g, L, D).reshape(B, H * g, L, D)
+        v = v[:, :, None].expand(B, H, g, L, D).reshape(B, H * g, L, D)
+    return F.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=scale)
+
+
 def attn_forward(m, xp, xq, rope_p, rope_q, mask_p, mask_q, q_img):
     B, Lp, _ = xp.shape
     M, Tq, _ = xq.shape
     qp, kp, vp, gp = _qkv(m, xp, *rope_p)
-    op = F.scaled_dot_product_attention(qp, kp, vp, attn_mask=mask_p, scale=m.scaling, enable_gqa=True)
+    op = sdpa(qp, kp, vp, mask_p, m.scaling)
     op = op.transpose(1, 2).reshape(B, Lp, -1) * torch.sigmoid(gp)
     qq, kq, vq, gq = _qkv(m, xq, *rope_q)
     k_all = torch.cat([kp[q_img], kq], dim=2)
     v_all = torch.cat([vp[q_img], vq], dim=2)
-    oq = F.scaled_dot_product_attention(qq, k_all, v_all, attn_mask=mask_q, scale=m.scaling, enable_gqa=True)
+    oq = sdpa(qq, k_all, v_all, mask_q, m.scaling)
     oq = oq.transpose(1, 2).reshape(M, Tq, -1) * torch.sigmoid(gq)
     return m.o_proj(op), m.o_proj(oq)
 

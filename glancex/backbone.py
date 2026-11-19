@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.checkpoint import checkpoint
 
-from ._layers import _gdn_core, _gdn_mix, _qkv, attn_forward, build_masks, gdn_forward
+from ._layers import _gdn_core, _gdn_mix, _qkv, attn_forward, build_masks, gdn_forward, sdpa
 
 MODES = ("i2t", "t2i", "bi")
 ALIASES = {"image_first": "i2t", "text_first": "t2i", "joint": "bi", "i2t": "i2t", "t2i": "t2i", "bi": "bi"}
@@ -52,7 +52,7 @@ def stream_mask(valid):
 def attn_stream(m, x, rope, mask):
     B, L, _ = x.shape
     q, k, v, gate = _qkv(m, x, *rope)
-    o = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, scale=m.scaling, enable_gqa=True)
+    o = sdpa(q, k, v, mask, m.scaling)
     return m.o_proj(o.transpose(1, 2).reshape(B, L, -1) * torch.sigmoid(gate))
 
 
@@ -60,29 +60,28 @@ def attn_stream(m, x, rope, mask):
 def pack(segments, T):
     """Concatenate the valid tokens of several LEFT-padded segments per row into one RIGHT-padded block.
     segments: list of (x [M,L,D], valid [M,L], pos [3,M,L], flag [M,L] or None). Returns x [M,T,D], valid [M,T],
-    pos [3,M,T] (pads continue the last position) and the packed flags (one bool tensor per segment)."""
+    pos [3,M,T] (pads continue the last position), the packed flags (one bool tensor per segment) and the index of
+    each row's last valid token. Static shapes, no host sync (CUDA-graph safe); T must bound the valid tokens per row."""
     M, D = segments[0][0].shape[0], segments[0][0].shape[-1]
     dev = segments[0][0].device
-    out = segments[0][0].new_zeros(M, T, D)
-    pos = torch.zeros(3, M, T, dtype=torch.long, device=dev)
+    out = segments[0][0].new_zeros(M, T + 1, D)                              # column T collects the pads
+    pos = torch.zeros(3, M, T + 1, dtype=torch.long, device=dev)
     flags = []
     off = torch.zeros(M, dtype=torch.long, device=dev)
     for x, v, p, f in segments:
-        dest = off[:, None] + v.long().cumsum(1) - 1                         # [M,L] destination of each valid token
-        rows = torch.arange(M, device=dev)[:, None].expand_as(v)
-        r, c = rows[v], dest[v]
-        out[r, c] = x[v]
-        pos[:, r, c] = p[:, v]
-        fl = torch.zeros(M, T, dtype=torch.bool, device=dev)
+        dest = torch.where(v, off[:, None] + v.long().cumsum(1) - 1, T)      # [M,L] destination of each token
+        out.scatter_(1, dest[..., None].expand(-1, -1, D), x)
+        pos.scatter_(2, dest[None].expand(3, -1, -1), p)
+        fl = torch.zeros(M, T + 1, dtype=torch.bool, device=dev)
         if f is not None:
-            fl[r, c] = f[v]
-        flags.append(fl)
+            fl.scatter_(1, dest, f & v)
+        flags.append(fl[:, :T])
         off = off + v.long().sum(1)
+    out, pos = out[:, :T].contiguous(), pos[:, :, :T]
     valid = torch.arange(T, device=dev)[None] < off[:, None]
     last = torch.gather(pos, 2, (off - 1).clamp(min=0)[None, :, None].expand(3, M, 1))
     step = (torch.arange(T, device=dev)[None] - off[:, None] + 1).clamp(min=0)
     pos = torch.where(valid[None], pos, last + step[None])
-    assert int(off.max()) <= T, (int(off.max()), T)
     return out, valid, pos, flags, off - 1
 
 
@@ -151,7 +150,10 @@ class GlanceXBackbone(torch.nn.Module):
         cfg = self.cfg
         emb = self.lm.embed_tokens
         xi = emb(batch["img_ids"])
-        xi = xi.masked_scatter(batch["img_mask"][..., None], torch.cat(img_feats, 0).to(xi.dtype))
+        feats = torch.cat(img_feats, 0) if isinstance(img_feats, (list, tuple)) else img_feats   # [F,D], F >= #patches
+        im = batch["img_mask"]
+        idx = (im.flatten().long().cumsum(0) - 1).clamp(min=0).view_as(im)  # i-th image patch <- i-th feature row
+        xi = torch.where(im[..., None], feats[idx].to(xi.dtype), xi)
         xt = emb(batch["txt_ids"])
         iv, tv = batch["img_valid"], batch["txt_valid"]
         ipos, tpos = batch["img_pos"], batch["txt_pos"]
@@ -164,7 +166,7 @@ class GlanceXBackbone(torch.nn.Module):
             xt = self.unimodal(xt, tv, tpos, uni)
         img_flag = batch["img_mask"]
         if mode == "i2t":
-            xq, qv, qpos, _, last = pack([(xt, tv, tpos, None)], max(int(tv.sum(1).max()), cfg.pad_txt_block_to))
+            xq, qv, qpos, _, last = pack([(xt, tv, tpos, None)], max(tv.shape[1], cfg.pad_txt_block_to))
             hp, hq = self.fusion(xi, iv, ipos, xq, qv, qpos, q_img, fus)
             hp, hq = self.lm.norm(hp), self.lm.norm(hq)
             vis = self._gather_vis(hp, img_flag, batch["vis_valid"])
@@ -175,14 +177,14 @@ class GlanceXBackbone(torch.nn.Module):
                 # prefix = text without R; block = image tokens + R (R = last column of the left-padded text stream)
                 xp, pv, ppos = xt[:, :-1], tv[:, :-1], tpos[:, :, :-1]
                 r_seg = (xt[:, -1:], tv[:, -1:], tpos[:, :, -1:], None)
-                T = max(int(iv.sum(1).max()) + 1, cfg.pad_t2i_block_to)
+                T = max(iv.shape[1] + 1, cfg.pad_t2i_block_to)          # static upper bounds (no host sync)
                 xq, qv, qpos, flags, last = pack([seg_img, r_seg], T)
                 prefix_of = torch.arange(M, device=xt.device)
             else:  # bi: no prefix (a few invalid pad slots keep the GDN conv tail well-defined)
                 xp = xt.new_zeros(M, 4, xt.shape[-1])
                 pv = torch.zeros(M, 4, dtype=torch.bool, device=xt.device)
                 ppos = torch.zeros(3, M, 4, dtype=torch.long, device=xt.device)
-                T = max(int(iv.sum(1).max()) + int(tv.sum(1).max()), cfg.pad_bi_block_to)
+                T = max(iv.shape[1] + tv.shape[1], cfg.pad_bi_block_to)
                 xq, qv, qpos, flags, last = pack([seg_img, (xt, tv, tpos, None)], T)
                 prefix_of = torch.arange(M, device=xt.device)
             hp, hq = self.fusion(xp, pv, ppos, xq, qv, qpos, prefix_of, fus)
@@ -194,6 +196,9 @@ class GlanceXBackbone(torch.nn.Module):
 
     @staticmethod
     def _gather_vis(h, flag, vis_valid):
-        vis = h.new_zeros(*vis_valid.shape, h.shape[-1])
-        vis[vis_valid] = h[flag]
-        return vis
+        """Row r's flagged tokens, in order, into vis[r, :n_r] (static shapes, no host sync)."""
+        R, N = vis_valid.shape
+        j = torch.where(flag, flag.long().cumsum(1) - 1, N)                 # rank among flagged tokens; others -> N
+        vis = h.new_zeros(R, N + 1, h.shape[-1])
+        vis.scatter_(1, j[..., None].expand(-1, -1, h.shape[-1]), h)
+        return vis[:, :N]

@@ -33,6 +33,13 @@ class GlanceXHeads(BoxHeads):
     @torch.no_grad()
     def decode_multi(self, hq, vis, vis_valid, centers, q_img, out, thr=0.5, topk=20, nms=0.5):
         """Boxes for every patch with objectness > thr (at most topk), then NMS. -> list of [k,4] tensors and scores."""
+        boxes, sc, keep = self.multi_tensors(hq, vis, vis_valid, centers, q_img, out, thr, topk, nms)
+        boxes, sc, keep = boxes.cpu(), sc.cpu(), keep.cpu()                    # one device->host copy
+        return [(boxes[m][keep[m]], sc[m][keep[m]]) for m in range(boxes.shape[0])]
+
+    @torch.no_grad()
+    def multi_tensors(self, hq, vis, vis_valid, centers, q_img, out, thr=0.5, topk=20, nms=0.5):
+        """decode_multi on the device with static shapes: boxes [M,k,4] (clamped), scores [M,k], keep [M,k]."""
         h = self.q_norm(hq.float())
         v = self.v_norm(vis.float())
         prob = out["obj_logits"].sigmoid()
@@ -44,16 +51,20 @@ class GlanceXHeads(BoxHeads):
         hk = h[:, None].expand(M, k, h.shape[-1])
         el = self.edges_logits(hk.reshape(M * k, -1), v_sel.reshape(M * k, -1), pc.reshape(M * k, 2))
         boxes = self.expected_box(el, pc.reshape(M * k, 2)).view(M, k, 4)
-        res = []
-        for m in range(M):
-            keep = sc[m] > thr
-            b, s = boxes[m][keep], sc[m][keep]
-            sel = []
-            for i in s.argsort(descending=True).tolist():
-                if all(box_iou_giou(b[i], b[j])[0] < nms for j in sel):
-                    sel.append(i)
-            res.append((b[sel].clamp(0, 1), s[sel]))
-        return res
+        return boxes.clamp(0, 1), sc, greedy_nms(boxes, sc, thr, nms)
+
+
+def greedy_nms(boxes, scores, thr, iou_thr):
+    """Per-row greedy NMS, vectorised over rows. boxes [M,k,4], scores [M,k] sorted descending (topk order).
+    A box is kept if its score > thr and its IoU with every higher-scored kept box is < iou_thr. -> keep [M,k]."""
+    M, k = scores.shape
+    iou = box_iou_giou(boxes[:, :, None], boxes[:, None, :])[0]               # [M,k,k]
+    valid = scores > thr
+    keep = torch.zeros_like(valid)
+    for i in range(k):
+        sup = (keep[:, :i] & (iou[:, i, :i] >= iou_thr)).any(1) if i else torch.zeros_like(valid[:, 0])
+        keep[:, i] = valid[:, i] & ~sup
+    return keep
 
 
 def union_center_target(boxes, n_boxes, centers, valid, grid_hw):
