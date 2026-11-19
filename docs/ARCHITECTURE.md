@@ -93,3 +93,36 @@ Decoding works as follows:
   once per shape.
 - **Optimiser.** AdamW, LR 2e-4 for LoRA and 5e-4 for the heads, 100 warm-up steps, then cosine to 5%. 2 epochs =
   6,100 steps at 8 images per step, about 1.8 s/step on one H200, 22 GB peak.
+
+## 6. Image cache (Glance-X2)
+
+In `image_first`, the image stream never reads a request, in any layer. Every layer's image state therefore depends
+on the image alone, and it can be computed once and reused for every later request:
+
+- `GlanceX.encode(images)` runs the vision tower and the image prefix through all 32 layers. It keeps, per image:
+  - for each fusion-stage Gated DeltaNet layer, the final recurrent state and the last k−1 conv inputs
+  - for each fusion-stage attention layer, the keys and values
+  - the final image tokens
+
+  This is about 55 MB per image.
+- `GlanceX.search(request, bank)` embeds the request once and runs its modality stage once. It then runs one short
+  block per image, starting from that image's cached state: Gated DeltaNet continues from the cached recurrent state,
+  and attention reads the cached keys and values. No image token is recomputed.
+
+The prefix and block halves are the same functions the full forward uses (`gdn_prefix` / `gdn_block` and
+`attn_prefix` / `attn_block` in `glancex/_layers.py`). `scripts/test_equivalence.py` checks that a cached query equals
+the full `image_first` forward, both with one request per image and with one request shared by every image.
+
+`text_first` and `joint` cannot be cached this way. There the image tokens read the request in the fusion stage, so
+24 layers × 640 image tokens must be recomputed for every new request.
+
+## 7. Two-way decoder (experimental, off by default)
+
+`decoder_layers > 0` adds a light SAM-style two-way decoder (width `decoder_dim`):
+- the request tokens attend to themselves and to the image tokens
+- the image tokens attend to the request tokens
+
+The decoder reads the request's last-layer tokens and the cached image tokens. Its outputs are added to the presence,
+centre, objectness, edge and IoU heads through zero-initialised layers, so a newly added decoder leaves the model
+unchanged (`tests/test_decoder.py`). In our runs it brought no accuracy gain; see
+[RESULTS.md](RESULTS.md#glance-x2).

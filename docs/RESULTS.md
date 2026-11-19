@@ -122,3 +122,56 @@ been separated yet:
 3. **The direction mix and the K=8 split.** Only half the batches are `image_first`.
 
 A K=0 benchmark run, and a run with a larger original-data share, would separate them.
+
+## Glance-X2
+
+Glance-X2 starts from the Glance-X K=8 checkpoint above and trains 1 more epoch (3,050 steps) in the
+`image_first` direction only, on the same data, with LoRA LR 1e-4 and head LR 5e-4
+(`configs/glance-x2-4b.json`). Two ablations add a light two-way decoder (SAM-style, width 512, 2 or 4 layers) whose
+outputs are added onto the existing heads through zero-initialised layers (`configs/ablations/`). All three runs used
+the same schedule, so the comparison isolates the decoder. Every number is from the full splits, evaluated in
+`image_first`.
+
+### Accuracy (%)
+
+| Metric | Glance-X `image_first` | Glance-X `joint` | **Glance-X2** | + decoder (2 layers) | + decoder (4 layers) |
+|---|:-:|:-:|:-:|:-:|:-:|
+| RefCOCO val / testA / testB | 92.9 / 94.8 / 90.4 | 93.1 / 94.9 / 90.5 | 93.6 / 95.1 / 90.5 | 93.5 / 95.2 / 91.1 | 93.6 / 95.4 / 91.2 |
+| RefCOCO+ val / testA / testB | 89.2 / 93.0 / 84.7 | 89.6 / 93.1 / 84.9 | 90.4 / 93.4 / 85.5 | 89.8 / 93.2 / 85.8 | 90.3 / 93.3 / 85.1 |
+| RefCOCOg val / test | 90.0 / 90.5 | 90.3 / 90.5 | 90.8 / 91.1 | 91.0 / 91.0 | 91.0 / 90.8 |
+| **RefCOCO family mean** | 90.7 | 90.9 | **91.3** | **91.3** | **91.3** |
+| gRefCOCO val: reject_rate / AUROC | 79.2 / 98.1 | 78.9 / 98.2 | 78.6 / 98.3 | 77.1 / 98.2 | 77.2 / 98.2 |
+| gRefCOCO val: multi-target F1 / hit-any | 77.3 / 81.2 | **82.7 / 89.0** | 80.6 / 85.7 | 79.8 / 85.1 | 79.6 / 84.9 |
+| gRefCOCO testA: multi-target F1 | 72.7 | **78.3** | 76.1 | 75.5 | 74.1 |
+| gRefCOCO testB: multi-target F1 | 63.8 | **72.2** | 68.4 | 67.8 | 66.5 |
+| Glance-Data: multi-target F1 / exact count | 62.6 / 39.1 | **69.7 / 46.7** | 67.3 / 43.4 | 66.8 / 42.5 | 67.0 / 42.6 |
+| Glance-Data: group, ≥1 target hit | 78.5 | **87.1** | 81.0 | 80.9 | 81.5 |
+| Glance-Data: look-alike attribute / relation rejected | 94.9 / 94.2 | 95.0 / 94.4 | 94.6 / 94.7 | 95.2 / 94.7 | 94.9 / 95.2 |
+
+What this shows:
+
+- **One more epoch of `image_first` helps.** The RefCOCO mean rises from 90.7 to 91.3, above `joint`. The
+  multi-target F1 on gRefCOCO val rises from 77.3 to 80.6, which closes about half of the gap to `joint`.
+- **The two-way decoder adds nothing on top.** It ties on RefCOCO and is 0.3–2.0 F1 points lower on multi-target
+  requests than the run without it. A small decoder (2–4 layers, width 512) on top of the cached image tokens does not
+  reproduce what `joint` gets from letting the image tokens read the request through 24 full-size layers. Possible
+  reasons, not tested: the small width, the single epoch, and zero-initialised residuals that start from a strong
+  model.
+
+### Latency (ms, one H200, end to end, N = 1 / 16 / 64 / 128)
+
+Inputs as in `scripts/compare_jev.py`: one 640×480 Glance-Data image with its first N requests, and a short request
+over the first N other images. `scripts/benchmark_twoway.py` measures the median of 5 runs after 2 warm-up runs.
+
+| Workload | Glance-X2 | + decoder (2 layers) | + decoder (4 layers) |
+|---|---|---|---|
+| one image, N requests | 58 / 79 / 137 / 219 | 59 / 78 / 145 / 228 | 60 / 81 / 147 / 234 |
+| one request, N cached images | 48 / 46 / 58 / 71 | 46 / 48 / 55 / 80 | 56 / 50 / 59 / 86 |
+| one request, N new images (encode + search) | 123 / 455 / 1,656 / 3,236 | 118 / 453 / 1,658 / 3,248 | 118 / 460 / 1,661 / 3,258 |
+
+The image cache takes 55 MB per image. For reference, the same inputs through the TypeSafe Jev 1.14 API:
+- one image, N requests: 90 / 97 / 109 / 122 ms
+- one request, N new images, as N concurrent requests: 74 / 391 / 1,453 / 2,042 ms
+
+The original Glance-X code took 148 / 201 / 247 / 345 ms for one image with N requests, and 138 / 754 / 2,996 /
+5,966 ms for one request over N new images (`text_first`).

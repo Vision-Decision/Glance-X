@@ -23,6 +23,7 @@
   <a href="#why-three-directions">Why</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#quick-start">Quick start</a> ·
+  <a href="#glance-x2-fast-in-both-directions">Glance-X2</a> ·
   <a href="#results">Results</a> ·
   <a href="#train-your-own">Train</a> ·
   <a href="docs/ARCHITECTURE.md">Architecture</a> ·
@@ -135,7 +136,9 @@ m.search("a giraffe eating from someone's hand", photos)[0]
 # Result("a giraffe eating from someone's hand", present_prob=0.994, box=[307, 22, 585, 324], confidence=0.753, n_boxes=0)
 ```
 
-These outputs are real (CUDA, bf16) and are the same predictions shown in the demo video.
+These outputs are real (CUDA, bf16) and are the same predictions shown in the demo video. They come from the exact
+path (`fast=False`); the default fast path (merged LoRA, CUDA graphs) agrees to within a few pixels on present
+targets.
 
 | `Result` field | Meaning |
 |---|---|
@@ -146,6 +149,65 @@ These outputs are real (CUDA, bf16) and are the same predictions shown in the de
 | `image_index` | which input image the result belongs to (for `search`) |
 
 Each mode also accepts its aliases: `i2t` for `image_first`, `t2i` for `text_first`, and `bi` for `joint`.
+
+## Glance-X2: fast in both directions
+
+Glance-X2 is the next model in the series. It keeps the same backbone, is trained further in the `image_first`
+direction, and adds an **image cache**:
+
+- In `image_first`, the image never reads the request, in any layer. So each image is encoded once, and its state
+  (Gated DeltaNet states, attention keys and values, image tokens) is kept on the GPU, about 55 MB per image.
+- A new request then runs only its own ~30 tokens against each cached image. The vision tower and the 640 image
+  tokens are not recomputed.
+- The cached path is exact: [`scripts/test_equivalence.py`](scripts/test_equivalence.py) checks it against the full
+  forward pass.
+
+> [!NOTE]
+> Glance-X2 weights are **not released yet**. Train them with `configs/glance-x2-4b.json` (see
+> [Train your own](#train-your-own)); the API is the same.
+
+```python
+m = GlanceX.from_pretrained("outputs/glance-x2-4b/ckpt_final.pt")
+
+bank = m.encode(photos)                       # once per image
+m.search("a giraffe eating from someone's hand", bank)[0]
+# Result("a giraffe eating from someone's hand", present_prob=0.995, box=[332, 6, 611, 319], confidence=0.872, n_boxes=0)
+m.search("a polar bear", bank)[0]
+# Result('a polar bear', present_prob=0.996, box=[395, 29, 614, 248], confidence=0.541, n_boxes=0)
+```
+
+The image is resized on worker threads and normalised on the GPU, and the language model and heads are replayed as
+CUDA graphs. With `devices=["cuda:0", "cuda:1", ...]`, each GPU holds one replica and batches are split across them.
+
+**Latency** (ms, end to end, N = 1 / 16 / 64 / 128). Glance runs on one H200; all systems get the same inputs
+([`scripts/compare_jev.py`](scripts/compare_jev.py), [`scripts/benchmark_twoway.py`](scripts/benchmark_twoway.py)).
+
+| Workload | Glance-X (v0.1 code) | **Glance-X2** | Jev 1.14 (TypeSafe API) |
+|---|---|---|---|
+| one image, N requests | 148 / 201 / 247 / 345 | **58 / 79 / 137 / 219** | 90 / 97 / 109 / 122 |
+| one request, N **cached** images | — | **48 / 46 / 58 / 71** | — |
+| one request, N **new** images | 138 / 754 / 2,996 / 5,966 (`text_first`) | 123 / 455 / 1,656 / 3,236 (encode + search) | 74 / 391 / 1,453 / 2,042 |
+
+The Jev times include the network round trip from our server; Jev answers N new images with N concurrent requests,
+spread over TypeSafe's servers. New images cost about 25 ms each on one GPU in any direction, because the image has
+to be encoded at least once.
+
+**Accuracy** (%, full splits):
+
+| Metric | Glance-X `image_first` | Glance-X `joint` | **Glance-X2** |
+|---|:-:|:-:|:-:|
+| RefCOCO family, 8-split mean Acc@0.5 | 90.7 | 90.9 | **91.3** |
+| gRefCOCO val, AUROC of P(present) | 98.1 | 98.2 | **98.3** |
+| gRefCOCO val, multi-target F1 | 77.3 | **82.7** | 80.6 |
+| Glance-Data, multi-target F1 | 62.6 | **69.7** | 67.3 |
+
+Glance-X2 is the most accurate model on single targets. `joint` is still about 2 F1 points better on multi-target
+requests, because it lets the image tokens read the request through all 24 fusion layers, but that also makes it
+uncacheable.
+
+We also tried a light two-way decoder (SAM-style, 2 or 4 layers) that lets the cached image tokens read the request
+cheaply. It brought no gain over the same training without it, so it is off by default (`decoder_layers=0`); see
+[docs/RESULTS.md](docs/RESULTS.md#glance-x2).
 
 ## Results
 
@@ -228,6 +290,7 @@ python scripts/prepare_refcoco.py --ann data/ann --out data/prep            # Re
 python scripts/merge_data.py --orig data/prep/train.jsonl \
     --aug data/glance-data/aug_train_all.jsonl --out data/train.jsonl       # + Glance-Data, one record per image
 python -m glancex.train --cfg configs/glance-x-4b-k8.json                   # K=8 (default); configs/glance-x-4b-k0.json for K=0
+python -m glancex.train --cfg configs/glance-x2-4b.json                     # Glance-X2: 1 more epoch of image_first from K=8
 ```
 
 | Setting | Value |
@@ -252,7 +315,8 @@ See [docs/TRAINING.md](docs/TRAINING.md) for data layout, hardware notes and eve
 
 ```
 glancex/
-  inference.py     GlanceX: from_pretrained / ask / find / search
+  inference.py     GlanceX: from_pretrained / ask / find / search / encode (image cache)
+  fast.py          CUDA-graph replay of the language model + heads
   backbone.py      the three-direction Qwen3.5 backbone (modality stage + fusion stage)
   _layers.py       prefix/block kernels for Gated DeltaNet and attention layers
   heads.py         presence / box / IoU / multi-box heads and the loss
@@ -261,12 +325,15 @@ glancex/
   evaluate.py      per-direction evaluation, original benchmarks + Glance-Data
 scripts/           data preparation, Hugging Face export, exactness test
 demo/              predict.py + render.py: how the demo video was made
-configs/           K=8, K=0 and a smoke-test config
+configs/           K=8, K=0, Glance-X2, a smoke test; ablations/ (two-way decoder)
 tests/             CPU unit tests (run in CI)
 ```
 
 ## Limitations
 
+- Glance-X2 weights are not released yet, and Glance-X2 was trained in the `image_first` direction only; its
+  `text_first` and `joint` directions were not evaluated.
+- The image cache takes about 55 MB of GPU memory per image.
 - Natural images only. The model was trained on COCO-style photos, not on screenshots or documents.
 - `text_first` and `joint` evaluate one (request, image) pair per block, so for many requests on one image,
   `image_first` is the efficient choice.

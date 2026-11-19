@@ -23,6 +23,7 @@
   <a href="#为什么要三个方向">为什么</a> ·
   <a href="#工作原理">工作原理</a> ·
   <a href="#快速上手">快速上手</a> ·
+  <a href="#glance-x2两个方向都快">Glance-X2</a> ·
   <a href="#结果">结果</a> ·
   <a href="#自己训练">训练</a> ·
   <a href="docs/ARCHITECTURE.md">架构</a> ·
@@ -126,7 +127,8 @@ m.search("a giraffe eating from someone's hand", photos)[0]
 # Result("a giraffe eating from someone's hand", present_prob=0.994, box=[307, 22, 585, 324], confidence=0.753, n_boxes=0)
 ```
 
-以上输出是真实结果（CUDA，bf16），与演示视频里的预测相同。
+以上输出是真实结果（CUDA，bf16），与演示视频里的预测相同。它们来自精确路径（`fast=False`）；默认的加速路径
+（合并 LoRA、CUDA graph）对存在的目标误差在几个像素以内。
 
 | `Result` 字段 | 含义 |
 |---|---|
@@ -137,6 +139,58 @@ m.search("a giraffe eating from someone's hand", photos)[0]
 | `image_index` | 结果属于哪张输入图（`search` 用） |
 
 每个模式也接受别名：`i2t` 对应 `image_first`，`t2i` 对应 `text_first`，`bi` 对应 `joint`。
+
+## Glance-X2：两个方向都快
+
+Glance-X2 是这个系列的下一个模型。骨干不变，在 `image_first` 方向上继续训练，并加入**图片缓存**：
+
+- 在 `image_first` 里，图像在任何一层都不读需求。所以每张图只需编码一次，把它的状态（Gated DeltaNet 状态、
+  注意力的 K/V、图像 token）留在 GPU 上，每张约 55 MB。
+- 之后来一句新需求，每张缓存的图只需跑这句需求自己的约 30 个 token，不再重算视觉塔和 640 个图像 token。
+- 缓存路径是精确的：[`scripts/test_equivalence.py`](scripts/test_equivalence.py) 会把它和完整前向逐项对比。
+
+> [!NOTE]
+> Glance-X2 的权重**暂未发布**。可以用 `configs/glance-x2-4b.json` 自己训练（见[自己训练](#自己训练)），接口完全相同。
+
+```python
+m = GlanceX.from_pretrained("outputs/glance-x2-4b/ckpt_final.pt")
+
+bank = m.encode(photos)                       # 每张图只编码一次
+m.search("a giraffe eating from someone's hand", bank)[0]
+# Result("a giraffe eating from someone's hand", present_prob=0.995, box=[332, 6, 611, 319], confidence=0.872, n_boxes=0)
+m.search("a polar bear", bank)[0]
+# Result('a polar bear', present_prob=0.996, box=[395, 29, 614, 248], confidence=0.541, n_boxes=0)
+```
+
+图片在 CPU 线程上缩放、在 GPU 上归一化，语言模型和输出头以 CUDA graph 重放。传入
+`devices=["cuda:0", "cuda:1", ...]` 时每张卡放一份模型，批次在各卡之间拆分。
+
+**延时**（ms，端到端，N = 1 / 16 / 64 / 128）。Glance 在一张 H200 上运行；所有系统用相同的输入
+（[`scripts/compare_jev.py`](scripts/compare_jev.py)、[`scripts/benchmark_twoway.py`](scripts/benchmark_twoway.py)）。
+
+| 场景 | Glance-X（v0.1 代码） | **Glance-X2** | Jev 1.14（TypeSafe API） |
+|---|---|---|---|
+| 一张图，N 句需求 | 148 / 201 / 247 / 345 | **58 / 79 / 137 / 219** | 90 / 97 / 109 / 122 |
+| 一句需求，N 张**已缓存**的图 | — | **48 / 46 / 58 / 71** | — |
+| 一句需求，N 张**新**图 | 138 / 754 / 2,996 / 5,966（`text_first`） | 123 / 455 / 1,656 / 3,236（编码 + 搜索） | 74 / 391 / 1,453 / 2,042 |
+
+Jev 的时间包含从我们服务器发出的网络往返；Jev 对 N 张新图是 N 个并发请求，分布在 TypeSafe 的服务器上。
+新图在任何方向下单卡都约 25 ms 一张，因为每张图至少要编码一次。
+
+**精度**（%，完整测试集）：
+
+| 指标 | Glance-X `image_first` | Glance-X `joint` | **Glance-X2** |
+|---|:-:|:-:|:-:|
+| RefCOCO 系列 8 个划分平均 Acc@0.5 | 90.7 | 90.9 | **91.3** |
+| gRefCOCO val，P(present) 的 AUROC | 98.1 | 98.2 | **98.3** |
+| gRefCOCO val，多目标 F1 | 77.3 | **82.7** | 80.6 |
+| Glance-Data，多目标 F1 | 62.6 | **69.7** | 67.3 |
+
+Glance-X2 在单目标上是目前最准的模型。`joint` 在多目标上仍高约 2 个 F1：它让图像 token 在全部 24 个融合层里读需求，
+但也因此无法缓存。
+
+我们还试过一个轻量双向解码器（SAM 式，2 层或 4 层），让缓存的图像 token 以很低的代价读需求。和不加它、同样训练的
+对照相比没有提升，所以默认关闭（`decoder_layers=0`），详见 [docs/RESULTS.md](docs/RESULTS.md#glance-x2)。
 
 ## 结果
 
@@ -211,6 +265,7 @@ python scripts/prepare_refcoco.py --ann data/ann --out data/prep            # Re
 python scripts/merge_data.py --orig data/prep/train.jsonl \
     --aug data/glance-data/aug_train_all.jsonl --out data/train.jsonl       # 加入 Glance-Data，每张图一条记录
 python -m glancex.train --cfg configs/glance-x-4b-k8.json                   # K=8（默认）；K=0 用 configs/glance-x-4b-k0.json
+python -m glancex.train --cfg configs/glance-x2-4b.json                     # Glance-X2：从 K=8 再训 1 个 epoch 的 image_first
 ```
 
 | 设置 | 值 |
@@ -235,7 +290,8 @@ python -m glancex.evaluate --ckpt outputs/glance-x-4b-k8/ckpt_final.pt --mode jo
 
 ```
 glancex/
-  inference.py     GlanceX：from_pretrained / ask / find / search
+  inference.py     GlanceX：from_pretrained / ask / find / search / encode（图片缓存）
+  fast.py          语言模型 + 输出头的 CUDA graph 重放
   backbone.py      三方向 Qwen3.5 骨干（单模态段 + 融合段）
   _layers.py       Gated DeltaNet 与注意力层的前缀/块计算
   heads.py         presence / box / IoU / multi-box 输出头和损失
@@ -244,12 +300,14 @@ glancex/
   evaluate.py      按方向评测：原始评测集 + Glance-Data
 scripts/           数据准备、导出到 Hugging Face、精确性测试
 demo/              predict.py + render.py：演示视频的生成方式
-configs/           K=8、K=0 和冒烟测试配置
+configs/           K=8、K=0、Glance-X2 和冒烟测试配置；ablations/（双向解码器）
 tests/             CPU 单元测试（CI 中运行）
 ```
 
 ## 局限
 
+- Glance-X2 的权重暂未发布；Glance-X2 只在 `image_first` 方向上训练，它的 `text_first` 和 `joint` 方向没有评测。
+- 图片缓存每张图约占 55 MB 显存。
 - 只针对自然图片：训练数据是 COCO 风格的照片，不是截图或文档。
 - `text_first` 和 `joint` 每个块只算一个（需求, 图）对；对一张图问很多句时，`image_first` 更高效。
 - 各部分许可不同：代码为 Apache-2.0；权重为 CC BY-NC-SA 4.0（非商业），因为 gRefCOCO 与 Glance-Data 仅限非商业研究。

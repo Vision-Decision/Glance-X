@@ -67,7 +67,7 @@ def main():
         ms2, _ = timed(lambda: m.search(sel["search_request"], m.encode(imgs)), a.warmup, a.repeat)
         res["one_request_new_images"][n] = ms2
         print(f"1 request x {n:3d} new images     {ms2:8.1f} ms (encode + search)", flush=True)
-        del bank
+        bank = None   # free the cache before the next size
     b1 = m.encode(sel["search_images"][:8])
     res["bank_mb_per_image"] = b1.nbytes / 2**20 / len(b1)
     json.dump(res, open(a.out, "w"), indent=1)

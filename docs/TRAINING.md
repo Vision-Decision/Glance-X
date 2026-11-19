@@ -61,6 +61,16 @@ A checkpoint holds only the LoRA weights, the heads and the config (about 0.5 GB
 Resume with `--set resume=outputs/.../ckpt_last.pt`. To initialise from another checkpoint without its step
 counter, use `init_ckpt`.
 
+### Glance-X2
+
+```bash
+python -m glancex.train --cfg configs/glance-x2-4b.json --set init_ckpt=outputs/glance-x-4b-k8/ckpt_final.pt
+```
+
+This continues from the Glance-X K=8 checkpoint for 1 epoch (3,050 steps, about 1.6 h on one H200), with
+`mode_probs=1,0,0` (`image_first` only), LoRA LR 1e-4 and head LR 5e-4. The decoder ablations are in
+`configs/ablations/`.
+
 ## Evaluate
 
 ```bash
@@ -89,6 +99,8 @@ All keys live in `glancex/config.py`. The ones that matter most:
 | `max_vis_tokens` | 640 | visual tokens per image (one per 32×32 px) |
 | `pad_*_to` | 642 / 44 / 644 / 688 | fixed sequence lengths during training; 0 = batch maximum (inference) |
 | `w_obj`, `obj_shrink` | 1.0, 0.5 | multi-box loss weight; central share of a box whose patches count as positive |
+| `decoder_layers` / `decoder_dim` / `decoder_heads` | 0 / 512 / 8 | the optional two-way decoder (0 = off) |
+| `init_ckpt` | "" | start from another checkpoint's LoRA and heads (new head parts keep their init) |
 
 ## Exactness test
 
