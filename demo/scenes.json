@@ -1,0 +1,55 @@
+{
+ "scenes": [
+  {
+   "kind": "ask",
+   "mode": "image_first",
+   "image": "COCO_train2014_000000298306.jpg",
+   "title": "6 requests, one pass over the image",
+   "requests": [
+    "the kid with glasses in the middle",
+    "right racket",
+    "左边举起球拍的男孩",
+    "boy on the left raising a blue racket",
+    "a frisbee",
+    "右边那个笑得很开心的女孩"
+   ]
+  },
+  {
+   "kind": "find",
+   "mode": "joint",
+   "image": "COCO_train2014_000000314051.jpg",
+   "multi": true,
+   "requests": [
+    "the two black and white cows in the field",
+    "趴着休息的那头",
+    "brown and white cow standing on the left"
+   ],
+   "title": "multi-target and look-alike rejection"
+  },
+  {
+   "kind": "find",
+   "mode": "joint",
+   "image": "COCO_train2014_000000414850.jpg",
+   "multi": true,
+   "requests": [
+    "the three giraffes in the field",
+    "smaller giraffe standing on the right",
+    "smaller giraffe running on the right"
+   ],
+   "title": "every target, not just one"
+  },
+  {
+   "kind": "search",
+   "mode": "text_first",
+   "request": "a giraffe eating from someone's hand",
+   "images": [
+    "COCO_train2014_000000414850.jpg",
+    "COCO_train2014_000000348382.jpg",
+    "COCO_train2014_000000314051.jpg",
+    "COCO_train2014_000000197401.jpg",
+    "COCO_train2014_000000463338.jpg",
+    "COCO_train2014_000000352312.jpg"
+   ]
+  }
+ ]
+}

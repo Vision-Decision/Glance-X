@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="Glance-X">
+  <title>Glance-X: one model, three ways to look</title>
+  <defs>
+    <mask id="gap" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff"/>
+      <path d="M48 48L80 80" stroke="#000" stroke-width="17"/>
+    </mask>
+  </defs>
+  <g transform="translate(70,58) scale(1.45)">
+    <g fill="none" stroke="#EEF0F4" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M18 46V28a10 10 0 0 1 10-10h18"/><path d="M82 18h18a10 10 0 0 1 10 10v18"/>
+      <path d="M110 82v18a10 10 0 0 1-10 10H82"/><path d="M46 110H28a10 10 0 0 1-10-10V82"/>
+    </g>
+    <g fill="none" stroke-width="10" stroke-linecap="round">
+      <path d="M80 48L48 80" stroke="#5B9BFF" mask="url(#gap)"/><path d="M48 48L80 80" stroke="#F08A4B"/>
+    </g>
+  </g>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif">
+    <text x="300" y="128" font-size="92" font-weight="800" letter-spacing="-2" fill="#F4F6FA">Glance<tspan fill="#F08A4B">-</tspan><tspan fill="#5B9BFF">X</tspan></text>
+    <text x="304" y="178" font-size="27" font-weight="500" fill="#9AA3B5">One model, three ways to look: find any object from a text request.</text>
+  <g transform="translate(300,214)">
+    <rect width="220" height="40" rx="20" fill="#161B26" stroke="#2A3242"/>
+    <circle cx="22" cy="20" r="6" fill="#F08A4B"/><circle cx="198" cy="20" r="6" fill="#5B9BFF"/>
+    <text x="110.0" y="26" text-anchor="middle" font-size="17" font-weight="600" fill="#F4F6FA">image → text</text>
+  </g>
+  <g transform="translate(536,214)">
+    <rect width="220" height="40" rx="20" fill="#161B26" stroke="#2A3242"/>
+    <circle cx="22" cy="20" r="6" fill="#5B9BFF"/><circle cx="198" cy="20" r="6" fill="#F08A4B"/>
+    <text x="110.0" y="26" text-anchor="middle" font-size="17" font-weight="600" fill="#F4F6FA">text → image</text>
+  </g>
+  <g transform="translate(772,214)">
+    <rect width="180" height="40" rx="20" fill="#161B26" stroke="#2A3242"/>
+    <circle cx="22" cy="20" r="6" fill="#F08A4B"/><circle cx="158" cy="20" r="6" fill="#5B9BFF"/>
+    <text x="90.0" y="26" text-anchor="middle" font-size="17" font-weight="600" fill="#F4F6FA">joint  ⇄</text>
+  </g>
+  </g>
+</svg>

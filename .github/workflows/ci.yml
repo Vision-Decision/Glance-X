@@ -1,0 +1,19 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -e ".[dev]"
+      - run: ruff check glancex scripts demo tests
+      - run: pytest -q
+      - name: no secrets in the tree
+        run: "! git grep -nE 'sk-[A-Za-z0-9]{20,}|hf_[A-Za-z0-9]{30,}|BEGIN [A-Z ]*PRIVATE KEY'"

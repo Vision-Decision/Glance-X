@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" role="img" aria-label="Glance-X">
+  <title>Glance-X</title>
+  <defs>
+    <mask id="gap" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
+      <rect width="128" height="128" fill="#fff"/>
+      <path d="M48 48L80 80" stroke="#000" stroke-width="17" stroke-linecap="butt"/>
+    </mask>
+  </defs>
+  <g fill="none" stroke="#EEF0F4" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M18 46V28a10 10 0 0 1 10-10h18"/>
+    <path d="M82 18h18a10 10 0 0 1 10 10v18"/>
+    <path d="M110 82v18a10 10 0 0 1-10 10H82"/>
+    <path d="M46 110H28a10 10 0 0 1-10-10V82"/>
+  </g>
+  <g fill="none" stroke-width="10" stroke-linecap="round">
+    <path d="M80 48L48 80" stroke="#5B9BFF" mask="url(#gap)"/>
+    <path d="M48 48L80 80" stroke="#F08A4B"/>
+  </g>
+</svg>

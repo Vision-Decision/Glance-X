@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+data/
+outputs/
+results/
+*.pt
+*.safetensors
+hf/*.safetensors
+hf/glancex_config.json
+.secrets/
+hf/assets/
