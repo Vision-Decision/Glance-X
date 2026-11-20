@@ -171,7 +171,8 @@ def probe_mlx(model, tokens, runs, warmup):
     ]:
         k, n = linear.w.shape
         x = mx.random.normal((m, k)).astype(mx.float16)
-        w, contiguous = linear.w, mx.contiguous(linear.w)
+        w = mx.contiguous(linear.w.T).T
+        contiguous = mx.contiguous(w)
         mx.eval(x, w, contiguous)
         rows[label] = {}
         for name, weight in (("transposed", w), ("contiguous", contiguous)):
@@ -246,7 +247,7 @@ def image_tokens(model, path):
     return w // 32 * (h // 32)
 
 
-def run(model, args, sync, checkpoint, trace):
+def run(model, args, sync, checkpoint, trace, baselines):
     with args.gate.joinpath("eval_refcoco_val.jsonl").open() as f:
         records = [json.loads(line) for line in f]
     coco = [str(args.gate / "images" / r["file"]) for r in records if (r["W"], r["H"]) == (640, 480)]
@@ -326,13 +327,17 @@ def run(model, args, sync, checkpoint, trace):
                 row["bank_bytes"] = bank.nbytes
             floor = FLOORS[n][work]
             row.update(engine=args.engine, tokens=n, workload=work, floor_ms=floor, target_ms=floor / 0.85)
+            baseline = baselines.get((n, work))
+            if baseline is not None:
+                row["baseline_ms"] = baseline
             data.append(row)
             checkpoint(data, complete=False)
             ms = row["median_ms"]
             warm = ", ".join(f"{t:.1f}" for t in row["warmup_ms"])
             trace_ms = f"{row['first_graph_trace_ms']:.2f}" if "first_graph_trace_ms" in row else "—"
-            print(f"| {args.engine} | {n} | {work} | {ms:.2f} | {floor / 0.85:.2f} | {100 * ms / floor:.1f}% | "
-                  f"{row['first_ms']:.2f} | {trace_ms} | {warm} |", flush=True)
+            baseline_ms = f"{baseline:.2f}" if baseline is not None else "—"
+            print(f"| {args.engine} | {n} | {work} | {baseline_ms} | {ms:.2f} | {floor / 0.85:.2f} | "
+                  f"{100 * ms / floor:.1f}% | {row['first_ms']:.2f} | {trace_ms} | {warm} |", flush=True)
             del fn
             bank = None
             if args.engine != "mlx":
@@ -362,6 +367,7 @@ def main():
     parser.add_argument("--probe-only", action="store_true")
     parser.add_argument("--operators-only", action="store_true")
     parser.add_argument("--profile-only", action="store_true")
+    parser.add_argument("--reference-json", type=Path, action="append", default=[])
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.runs < 10 or args.warmup < 1:
@@ -371,7 +377,12 @@ def main():
     args.operators |= args.operators_only
     if args.engine != "mlx" and (args.probe or args.operators):
         parser.error("--probe and --operators require --engine mlx")
-    warnings.filterwarnings("ignore", message="User provided device_type of 'cuda', but CUDA is not available")
+    warnings.filterwarnings("ignore", message="CUDA is not available.*Disabling autocast")
+    baselines = {}
+    for path in args.reference_json:
+        for row in json.loads(path.read_text())["data"]:
+            if "workload" in row and "median_ms" in row:
+                baselines[row["tokens"], row["workload"]] = row["median_ms"]
     if args.engine != "mlx":
         sync = torch.mps.synchronize
     else:
@@ -426,15 +437,16 @@ def main():
         model, load_ms = elapsed(load, sync)
         print(f"{args.engine} model load {load_ms:.1f} ms, request block {len(model.tok.text(REQUEST))} tokens, "
               f"vision {args.vision if args.engine == 'mlx' else args.engine}", flush=True)
-        print("| Engine | N | Workload | Median (ms) | Target (ms) | % of floor | First (ms) | Trace (ms) | Warm-ups (ms) |", flush=True)
-        print("|---|---:|---|---:|---:|---:|---:|---:|---|", flush=True)
+        print("| Engine | N | Workload | Baseline (ms) | Median (ms) | Target (ms) | % of floor | "
+              "First (ms) | Trace (ms) | Warm-ups (ms) |", flush=True)
+        print("|---|---:|---|---:|---:|---:|---:|---:|---:|---|", flush=True)
 
         def checkpoint(data, complete):
             if args.output:
                 payload = dict(load_ms=load_ms, engine=args.engine, vision=args.vision, complete=complete, data=data)
                 args.output.write_text(json.dumps(payload, indent=2) + "\n")
 
-        data = run(model, args, sync, checkpoint, trace)
+        data = run(model, args, sync, checkpoint, trace, baselines)
         checkpoint(data, complete=True)
 
 
