@@ -1,6 +1,7 @@
 """Apple-silicon backend for the two Glance-X-Lite inference directions."""
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -15,14 +16,18 @@ from .data import resize_dims
 from .inference import ImageBank, Result, merge_lora
 
 
+@dataclass
 class MacImageBank(ImageBank):
     """MLX cache. DeltaNet state uses fp32 and attention keys/values use fp16."""
+
+    unpadded: bool = True
 
     def slice(self, a, b):
         d = self.data
         states = [tuple(t[a:b] for t in layer) for layer in d["states"]]
         data = {k: v[a:b] for k, v in d.items() if k != "states"}
-        return MacImageBank(dict(data, states=states), self.vis_valid[a:b], self.centers[a:b], self.orig_wh[a:b], self.device)
+        return MacImageBank(dict(data, states=states), self.vis_valid[a:b], self.centers[a:b], self.orig_wh[a:b],
+                            self.device, self.unpadded)
 
     @property
     def nbytes(self):
@@ -52,7 +57,8 @@ class MacImageBank(ImageBank):
         valid = join([bank.vis_valid for bank in banks], 1)
         centers = join([bank.centers for bank in banks], 1)
         mx.eval(data, valid, centers)
-        return MacImageBank(data, valid, centers, [wh for bank in banks for wh in bank.orig_wh], "mlx")
+        unpadded = all(bank.unpadded and bank.vis_valid.shape[1] == valid.shape[1] for bank in banks)
+        return MacImageBank(data, valid, centers, [wh for bank in banks for wh in bank.orig_wh], "mlx", unpadded)
 
 
 class BoxDecoder:
@@ -105,15 +111,17 @@ class BoxDecoder:
 
 def _nms(boxes, scores, threshold):
     # The Torch API computes IoU before clamping the coordinates.
+    count = int(np.count_nonzero(scores > threshold))
+    if count <= 1:
+        return list(range(count))
+    boxes = boxes[:count]
     a, b = boxes[:, None], boxes[None, :]
     wh = np.maximum(np.minimum(a[..., 2:], b[..., 2:]) - np.maximum(a[..., :2], b[..., :2]), 0)
     intersection = wh.prod(axis=-1)
     area = np.maximum(boxes[:, 2:] - boxes[:, :2], 0).prod(axis=-1)
     iou = intersection / np.maximum(area[:, None] + area[None, :] - intersection, 1e-9)
     kept = []
-    for i, score in enumerate(scores):
-        if score <= threshold:
-            break
+    for i in range(count):
         if not np.any(iou[i, kept] >= 0.5):
             kept.append(i)
     return kept
@@ -243,8 +251,8 @@ class MacInference:
         return xp, xq
 
     def _query_layers(self, x, rope, mask, states):
-        for layer, state in zip(self.fusion, states):
-            x = layer.branch(x, rope, mask, state)
+        for i, (layer, state) in enumerate(zip(self.fusion, states)):
+            x = layer.branch(x, rope, mask, state, readout_only=i == len(states) - 1)
         return self.norm(x[:, -1])
 
     def _fuse(self, image, text, mode):
@@ -319,8 +327,10 @@ class MacInference:
         banks = []
         for a in range(0, len(images), batch_size):
             for image in images[a:a+batch_size]:
-                pixels, wh = self._load(image, None)
-                d, centers, valid = self._encode(self._image(pixels, self.vision(pixels)))
+                pixels, wh = self._stage("preprocess", self._load, image, None)
+                features = self._stage("vision", self.vision, pixels)
+                im = self._stage("image modality", self._image, pixels, features)
+                d, centers, valid = self._stage("prefix and image heads", self._encode, im)
                 mx.eval(d, centers, valid)
                 banks.append(MacImageBank(d, valid, centers, [wh], "mlx"))
         if not banks:
@@ -328,33 +338,38 @@ class MacInference:
         return MacImageBank.concat(banks)
 
     def search_bank(self, request, bank, threshold, diagnostics=False):
-        xt, tp, _, _ = self._text([request])
+        xt, tp, _, _ = self._stage("text modality", self._text, [request])
         qr = self._rope(tp)
         result = []
         for a in range(0, len(bank), 256):
             part = bank if a == 0 and len(bank) <= 256 else bank.slice(a, a + 256)
             data = part.data
-            x = mx.broadcast_to(xt, (len(part), *xt.shape[1:]))
-            # Every cached row can have its own length.
-            mask = _block_mask(data["p_valid"], mx.ones(x.shape[:2], mx.bool_), self.cfg.bidir_block_mask == "block_bidir")
-            readout = self.query_layers(x, qr, mask, data["states"])
-            decoded = self.box.decode(readout, data, part.centers, part.vis_valid, None)
-            result.extend(self._results(
+            bidirectional = self.cfg.bidir_block_mask == "block_bidir"
+            mask = None
+            if not part.unpadded or not bidirectional:
+                valid = mx.ones((len(part), xt.shape[1]), mx.bool_)
+                mask = _block_mask(data["p_valid"], valid, bidirectional)
+            readout = self._stage("cached fusion", self.query_layers, xt, qr, mask, data["states"])
+            decoded = self._stage("heads", self.box.decode, readout, data, part.centers, part.vis_valid, None)
+            result.extend(self._stage("result conversion", lambda: self._results(
                 decoded, part.orig_wh, [request] * len(part), threshold, a, diagnostics=diagnostics, per_image=True,
-            ))
+            )))
         return result
 
     def profile(self, image, request, mode, repeats):
         from .backbone import canonical_mode
 
-        mode = canonical_mode(mode)
-        self.ask(image, [request], mode, 0.5)
+        direction = canonical_mode(mode)
+        return self.profile_call(lambda: self.ask(image, [request], direction, 0.5), repeats)
+
+    def profile_call(self, call, repeats):
+        call()
         samples = []
         try:
             for _ in range(repeats):
                 self._timings = {}
                 start = perf_counter()
-                self.ask(image, [request], mode, 0.5)
+                call()
                 mx.synchronize()
                 self._timings["total"] = (perf_counter() - start) * 1000
                 samples.append(self._timings)

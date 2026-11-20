@@ -5,6 +5,7 @@ Run from the checkout with python -m scripts.benchmark_mac. Model and images are
 import argparse
 from collections import Counter
 from contextlib import ExitStack
+from functools import wraps
 import json
 from pathlib import Path
 from statistics import median
@@ -34,11 +35,19 @@ def elapsed(fn, sync):
     return result, (perf_counter() - start) * 1000
 
 
-def measure(fn, sync, repeats, warmup):
-    _, first = elapsed(fn, sync)
+def measure(fn, sync, repeats, warmup, trace=None, expected=None):
+    before_trace = trace() if trace else 0.0
+    result, first = elapsed(fn, sync)
+    if expected is not None and len(result) != expected:
+        raise RuntimeError(f"Expected {expected} outputs, got {len(result)}")
+    del result
+    first_trace = trace() - before_trace if trace else None
     warm = [elapsed(fn, sync)[1] for _ in range(warmup)]
     samples = [elapsed(fn, sync)[1] for _ in range(repeats)]
-    return dict(first_ms=first, warmup_ms=warm, median_ms=median(samples), samples_ms=samples)
+    data = dict(first_ms=first, warmup_ms=warm, median_ms=median(samples), samples_ms=samples)
+    if first_trace is not None:
+        data["first_graph_trace_ms"] = first_trace
+    return data
 
 
 def profile_reference(model, image, mode, repeats):
@@ -156,6 +165,9 @@ def probe_mlx(model, tokens, runs, warmup):
         ("LM MLP up", vlm.layers[0].up, tokens + 2),
         ("LM MLP down", vlm.layers[0].down, tokens + 2),
         ("cache LM MLP up", vlm.layers[0].up, len(model.tok.text(REQUEST))),
+        ("wide LM GDN in", vlm.layers[0].mix.in_proj, 256 * len(model.tok.text(REQUEST))),
+        ("wide LM MLP up", vlm.layers[0].up, 256 * len(model.tok.text(REQUEST))),
+        ("wide LM MLP down", vlm.layers[0].down, 256 * len(model.tok.text(REQUEST))),
     ]:
         k, n = linear.w.shape
         x = mx.random.normal((m, k)).astype(mx.float16)
@@ -167,6 +179,18 @@ def probe_mlx(model, tokens, runs, warmup):
             result["tflops"] = 2 * m * k * n / result["median_ms"] / 1e9
             result["shape"] = [m, k, n]
             rows[label][name] = result
+        if n % 64:
+            padded = mx.pad(w.T, [(0, (-n) % 64), (0, 0)]).T
+            mx.eval(padded)
+            result = measure(lambda: mx.eval((x @ padded)[:, :n]), mx.synchronize, runs, warmup)
+            result["tflops"] = 2 * m * k * n / result["median_ms"] / 1e9
+            rows[label]["pad N to 64"] = result
+        if m % 32 and m >= 256:
+            aligned = mx.pad(x, [(0, (-m) % 32), (0, 0)])
+            mx.eval(aligned)
+            result = measure(lambda: mx.eval((aligned @ w)[:m]), mx.synchronize, runs, warmup)
+            result["tflops"] = 2 * m * k * n / result["median_ms"] / 1e9
+            rows[label]["pad M to 32"] = result
         if label.startswith("vision"):
             xf, wf = x.astype(mx.float32), w.astype(mx.float32)
             mx.eval(xf, wf)
@@ -194,16 +218,19 @@ def probe_mlx(model, tokens, runs, warmup):
         state = None if length > 16 else mx.zeros((batch, 16, 128, 128))
         mx.eval(q, k, v, decay, beta, state)
         delta[f"B={batch} L={length}"] = {}
-        for width in (8, 16, 32):
-            fn = lambda: mx.eval(delta_rule(q, k, v, decay, beta, state, save_state=state is None, width=width))
-            delta[f"B={batch} L={length}"][width] = measure(fn, mx.synchronize, runs, warmup)
+        for width, vector in ((8, 1), (16, 1), (32, 1), (8, 4), (16, 4), (32, 4)):
+            fn = lambda: mx.eval(delta_rule(q, k, v, decay, beta, state, save_state=state is None, width=width, vector=vector))
+            delta[f"B={batch} L={length}"][f"{width} lanes ×{vector}"] = measure(fn, mx.synchronize, runs, warmup)
     q, k, v = (mx.random.normal((1, 4 * tokens, 12, 64)).astype(mx.float16).transpose(0, 2, 1, 3) for _ in range(3))
     mx.eval(q, k, v)
     attention = {}
+    q32, k32, v32 = (x.astype(mx.float32) for x in (q, k, v))
+    mx.eval(q32, k32, v32)
     for name, fn in [
         ("default", lambda: mx.fast.scaled_dot_product_attention(q, k, v, scale=0.125)),
         ("forced fused", lambda: mx.fast.scaled_dot_product_attention(q, k, v, scale=0.125, force_fused=True)),
         ("separate", lambda: mx.softmax((q @ k.swapaxes(-1, -2)) * 0.125, axis=-1, precise=True) @ v),
+        ("fp32 fused", lambda: mx.fast.scaled_dot_product_attention(q32, k32, v32, scale=0.125, force_fused=True)),
     ]:
         attention[name] = measure(lambda: mx.eval(fn()), mx.synchronize, runs, warmup)
     x = mx.zeros((256 * 1024 * 1024,), dtype=mx.float16)
@@ -219,7 +246,7 @@ def image_tokens(model, path):
     return w // 32 * (h // 32)
 
 
-def run(model, args, sync, checkpoint):
+def run(model, args, sync, checkpoint, trace):
     with args.gate.joinpath("eval_refcoco_val.jsonl").open() as f:
         records = [json.loads(line) for line in f]
     coco = [str(args.gate / "images" / r["file"]) for r in records if (r["W"], r["H"]) == (640, 480)]
@@ -244,7 +271,7 @@ def run(model, args, sync, checkpoint):
             ops = profile_mlx_operators(model, image, args.runs)
             print(f"operators {args.engine} N={n}: {json.dumps(ops)}", flush=True)
             data.append(dict(engine=args.engine, tokens=n, operators=ops))
-        if args.profile:
+        if args.profile and (args.engine != "mlx" or not args.workload):
             for mode in ("image_first", "text_first"):
                 if args.engine != "mlx":
                     stages = profile_reference(model, image, mode, args.runs)
@@ -252,7 +279,7 @@ def run(model, args, sync, checkpoint):
                     stages = model._mac.profile(image, REQUEST, mode, args.runs)
                 print(f"profile {args.engine} N={n} {mode}: {json.dumps(stages)}", flush=True)
                 data.append(dict(engine=args.engine, tokens=n, mode=mode, profile=stages))
-        if args.profile_only or args.probe_only or args.operators_only:
+        if args.probe_only or args.operators_only or (args.profile_only and (args.engine != "mlx" or not args.workload)):
             continue
         for work in args.workload or [*WORKLOADS[:-1], *(["search256"] if n == 638 else [])]:
             bank = None
@@ -279,10 +306,20 @@ def run(model, args, sync, checkpoint):
                 else:
                     fn = lambda: model.search(REQUEST, bank, sort=False)
             sync()
+            if args.profile and args.engine == "mlx" and (work not in ("ask1", "text1") or args.workload):
+                stage_profile = model._mac.profile_call(fn, args.runs)
+                print(f"workload profile {args.engine} N={n} {work}: {json.dumps(stage_profile)}", flush=True)
+                data.append(dict(engine=args.engine, tokens=n, workload=work, profile=stage_profile))
+                checkpoint(data, complete=False)
+            if args.profile_only:
+                del fn
+                bank = None
+                continue
             if args.engine == "mlx":
                 import mlx.core as mx
                 mx.reset_peak_memory()
-            row = measure(fn, sync, args.runs, args.warmup)
+            counts = dict(ask8=8, encode=1, search1=1, search256=256)
+            row = measure(fn, sync, args.runs, args.warmup, trace, counts.get(work))
             if args.engine == "mlx":
                 row["device_peak_bytes"] = mx.get_peak_memory()
             if bank is not None:
@@ -293,8 +330,9 @@ def run(model, args, sync, checkpoint):
             checkpoint(data, complete=False)
             ms = row["median_ms"]
             warm = ", ".join(f"{t:.1f}" for t in row["warmup_ms"])
+            trace_ms = f"{row['first_graph_trace_ms']:.2f}" if "first_graph_trace_ms" in row else "—"
             print(f"| {args.engine} | {n} | {work} | {ms:.2f} | {floor / 0.85:.2f} | {100 * ms / floor:.1f}% | "
-                  f"{row['first_ms']:.2f} | {warm} |", flush=True)
+                  f"{row['first_ms']:.2f} | {trace_ms} | {warm} |", flush=True)
             del fn
             bank = None
             if args.engine != "mlx":
@@ -317,6 +355,7 @@ def main():
     parser.add_argument("--workload", choices=WORKLOADS, action="append")
     parser.add_argument("--bank-seeds", type=int, default=8)
     parser.add_argument("--reference-search-chunk", type=int, default=256)
+    parser.add_argument("--trace-compile", action="store_true", help="time Python graph tracing on the first MLX invocation")
     parser.add_argument("--profile", action="store_true")
     parser.add_argument("--operators", action="store_true", help="attribute MLX time to synchronized operators")
     parser.add_argument("--probe", action="store_true", help="measure native GEMM layouts and memory bandwidth")
@@ -354,18 +393,49 @@ def main():
             parser.error("MLX is required for --engine mlx")
         return model
 
-    model, load_ms = elapsed(load, sync)
-    print(f"{args.engine} model load {load_ms:.1f} ms, request block {len(model.tok.text(REQUEST))} tokens, "
-          f"vision {args.vision if args.engine == 'mlx' else args.engine}", flush=True)
-    print("| Engine | N | Workload | Median (ms) | Target (ms) | % of floor | First (ms) | Warm-ups (ms) |", flush=True)
-    print("|---|---:|---|---:|---:|---:|---:|---:|", flush=True)
-    def checkpoint(data, complete):
-        if args.output:
-            payload = dict(load_ms=load_ms, engine=args.engine, vision=args.vision, complete=complete, data=data)
-            args.output.write_text(json.dumps(payload, indent=2) + "\n")
+    trace_ms = 0.0
+    nesting = 0
 
-    data = run(model, args, sync, checkpoint)
-    checkpoint(data, complete=True)
+    def tracked_compile(fn=None, **kwargs):
+        if fn is None:
+            return lambda f: tracked_compile(f, **kwargs)
+
+        @wraps(fn)
+        def tracked(*a, **kw):
+            nonlocal trace_ms, nesting
+            outer = nesting == 0
+            start = perf_counter()
+            nesting += 1
+            try:
+                return fn(*a, **kw)
+            finally:
+                nesting -= 1
+                if outer:
+                    trace_ms += (perf_counter() - start) * 1000
+
+        return original_compile(tracked, **kwargs)
+
+    with ExitStack() as stack:
+        trace = None
+        if args.trace_compile:
+            if args.engine != "mlx":
+                parser.error("--trace-compile requires --engine mlx")
+            original_compile = mx.compile
+            stack.enter_context(patch.object(mx, "compile", tracked_compile))
+            trace = lambda: trace_ms
+        model, load_ms = elapsed(load, sync)
+        print(f"{args.engine} model load {load_ms:.1f} ms, request block {len(model.tok.text(REQUEST))} tokens, "
+              f"vision {args.vision if args.engine == 'mlx' else args.engine}", flush=True)
+        print("| Engine | N | Workload | Median (ms) | Target (ms) | % of floor | First (ms) | Trace (ms) | Warm-ups (ms) |", flush=True)
+        print("|---|---:|---|---:|---:|---:|---:|---:|---|", flush=True)
+
+        def checkpoint(data, complete):
+            if args.output:
+                payload = dict(load_ms=load_ms, engine=args.engine, vision=args.vision, complete=complete, data=data)
+                args.output.write_text(json.dumps(payload, indent=2) + "\n")
+
+        data = run(model, args, sync, checkpoint, trace)
+        checkpoint(data, complete=True)
 
 
 if __name__ == "__main__":
