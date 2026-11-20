@@ -15,7 +15,7 @@
   <a href="https://huggingface.co/Vision-Decision/Glance-X-Lite"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-Glance--X--Lite-FFD21E?logo=huggingface&logoColor=000" alt="Hugging Face 模型：Glance-X-Lite"></a>
   <a href="https://github.com/Vision-Decision/Glanece-Training"><img src="https://img.shields.io/badge/training-Glanece--Training-181717?logo=github&logoColor=white" alt="训练代码：Glanece-Training"></a>
   <a href="https://github.com/Vision-Decision/Glance-Data"><img src="https://img.shields.io/badge/data-Glance--Data-181717?logo=github&logoColor=white" alt="Glance-Data (GitHub)"></a>
-  <a href="https://huggingface.co/datasets/Vision-Decision/Glance-Data"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20dataset-Glance--Data-FFD21E?logo=huggingface&logoColor=000" alt="Glance-Data (Hugging Face)"></a>
+  <a href="https://huggingface.co/datasets/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20dataset-Glance--COCO-FFD21E?logo=huggingface&logoColor=000" alt="Glance-COCO (Hugging Face)"></a>
   <img src="https://img.shields.io/badge/weights-CC%20BY--NC--SA%204.0-6B7280" alt="权重许可：CC BY-NC-SA 4.0">
   <a href="LICENSE"><img src="https://img.shields.io/badge/code-Apache%202.0-2F80ED?logo=apache&logoColor=white" alt="代码许可：Apache-2.0"></a>
 </p>

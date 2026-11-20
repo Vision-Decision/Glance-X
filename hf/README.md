@@ -7,7 +7,7 @@ language:
   - en
   - zh
 datasets:
-  - Vision-Decision/Glance-Data
+  - Vision-Decision/Glance-COCO
 tags:
   - visual-grounding
   - referring-expression-comprehension
@@ -26,7 +26,7 @@ tags:
   <a href="https://github.com/Vision-Decision/Glance-X"><img src="https://img.shields.io/badge/GitHub-Glance--X-181717?logo=github&logoColor=white" alt="GitHub: Glance-X"></a>
   <a href="https://github.com/Vision-Decision/Glanece-Training"><img src="https://img.shields.io/badge/training-Glanece--Training-181717?logo=github&logoColor=white" alt="Training code"></a>
   <a href="https://github.com/Vision-Decision/Glance-Data"><img src="https://img.shields.io/badge/data-Glance--Data%20(GitHub)-181717?logo=github&logoColor=white" alt="Glance-Data on GitHub"></a>
-  <a href="https://huggingface.co/datasets/Vision-Decision/Glance-Data"><img src="https://img.shields.io/badge/data-Glance--Data%20(HF)-FFD21E?logo=huggingface&logoColor=000" alt="Glance-Data on Hugging Face"></a>
+  <a href="https://huggingface.co/datasets/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/data-Glance--COCO%20(HF)-FFD21E?logo=huggingface&logoColor=000" alt="Glance-Data on Hugging Face"></a>
   <a href="https://huggingface.co/Qwen/Qwen3.5-0.8B-Base"><img src="https://img.shields.io/badge/base-Qwen3.5--0.8B--Base-7C3AED" alt="Base model"></a>
   <img src="https://img.shields.io/badge/weights-CC%20BY--NC--SA%204.0-6B7280" alt="Weights license">
 </p>
