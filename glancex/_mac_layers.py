@@ -5,6 +5,8 @@ from functools import partial
 
 import mlx.core as mx
 import mlx.nn as nn
+import numpy as np
+from PIL import Image
 import torch
 from transformers.vision_utils import get_vision_interpolation_indices_and_weights, get_vision_position_ids
 
@@ -21,6 +23,7 @@ class Linear:
         if weight is None:
             weight = layers[0].weight if len(layers) == 1 else torch.cat([layer.weight for layer in layers])
         self.w = array(weight, dtype).T
+        self.compute_dtype = dtype
         if contiguous:
             self.w = mx.contiguous(self.w)
             mx.eval(self.w)
@@ -32,8 +35,10 @@ class Linear:
         )
 
     def __call__(self, x):
-        flat = x.astype(self.w.dtype).reshape(-1, x.shape[-1])
-        y = flat @ self.w if self.bias is None else mx.addmm(self.bias, flat, self.w)
+        dtype = self.compute_dtype
+        flat = x.astype(dtype).reshape(-1, x.shape[-1])
+        weight = self.w.astype(dtype)
+        y = flat @ weight if self.bias is None else mx.addmm(self.bias.astype(dtype), flat, weight)
         return y.reshape(*x.shape[:-1], self.w.shape[-1])
 
 
@@ -80,12 +85,21 @@ def _gated_norm(x, z, weight):
     return mx.fast.rms_norm(x, weight, 1e-6) * z * mx.sigmoid(z)
 
 
+class PatchProjection:
+    def __init__(self, proj):
+        # The preprocessing repeats the still image in the two temporal planes.
+        # Sum the stored fp16 planes in fp32 before applying the projection.
+        self.planes = array(proj.weight.detach().transpose(1, 2).flatten(2), mx.float16)
+        self.bias = array(proj.bias)
+
+    def __call__(self, patches):
+        weight = self.planes.astype(mx.float32).sum(axis=1).T
+        return mx.addmm(self.bias, patches, weight)
+
+
 class Vision:
-    def __init__(self, vision, processor):
-        proj = vision.patch_embed.proj
-        # Still images repeat the same patch at both temporal positions.
-        weight = proj.weight.detach().float().sum(dim=2).flatten(1)
-        self.patch = Linear(proj, weight=weight)
+    def __init__(self, vision, processor, precise=True):
+        self.patch = PatchProjection(vision.patch_embed.proj)
         self.side = vision.num_grid_per_side
         self.merge = vision.spatial_merge_size
         self.patch_size = vision.patch_size
@@ -102,6 +116,14 @@ class Vision:
         self.mean, self.std = mx.array(processor.image_mean), mx.array(processor.image_std)
         self.positions = {}
         self.forward = mx.compile(self._forward)
+        if precise:
+            self.use_fp32_arithmetic()
+
+    def use_fp32_arithmetic(self):
+        for block in self.blocks:
+            for projection in (block[1], block[2], *block[5:]):
+                projection.compute_dtype = mx.float32
+        self.m_up.compute_dtype = self.m_down.compute_dtype = mx.float32
 
     def geometry(self, height, width):
         key = (height, width)
@@ -141,6 +163,29 @@ class Vision:
             h = h + down(nn.gelu_approx(up(norm2(h))))
         merged = self.m_norm(h).reshape(h.shape[0] // (m * m), -1)
         return self.m_down(nn.gelu(self.m_up(merged))).astype(mx.float32)
+
+
+class MPSVision:
+    """The frozen HF vision tower with fp16 stored weights and fp32 arithmetic on MPS."""
+
+    def __init__(self, vision, processor):
+        self.module = vision.eval()
+        for p in vision.parameters():
+            p.data = p.data.to(dtype=torch.float16)
+        self.module = self.module.to("mps")
+        self.processor = processor
+        self.patch_size = vision.patch_size
+        self.merge = vision.spatial_merge_size
+
+    @torch.inference_mode()
+    def __call__(self, pixels):
+        img = Image.fromarray(np.asarray(pixels))
+        proc = self.processor(images=[img], do_resize=False, return_tensors="pt").to("mps")
+        weights = {name: p.float() for name, p in self.module.named_parameters()}
+        feat = torch.func.functional_call(
+            self.module, weights, (proc["pixel_values"], proc["image_grid_thw"]),
+        ).pooler_output
+        return array(feat)
 
 
 class GatedDelta:

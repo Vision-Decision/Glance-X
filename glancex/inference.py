@@ -72,6 +72,8 @@ class ImageBank:
 
     @staticmethod
     def concat(banks):
+        if banks[0].device == "mlx":
+            return type(banks[0]).concat(banks)
         st = [tuple(torch.cat(ts, 0) for ts in zip(*layer)) for layer in zip(*[b.data["states"] for b in banks])]
         d = dict(states=st, p_valid=torch.cat([b.data["p_valid"] for b in banks]),
                  vis=torch.cat([b.data["vis"] for b in banks]))
@@ -94,6 +96,7 @@ class GlanceX:
         self.tok = Tok(proc, cfg.max_q_tokens)
         self.fast = fast
         self._mac = None
+        self._torch_reference = None
         self._pool = ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) if fast else None
         if fast:
             merge_lora(net.hf)
@@ -107,13 +110,18 @@ class GlanceX:
             from .fast import GraphRunner
             self.runners = [GraphRunner(n, h, self.tok, cfg, d) for d, n, h in self.replicas]
 
+    def _reference_model(self):
+        if self._torch_reference is None:
+            self._torch_reference = self._load_torch_reference()
+        return self._torch_reference
+
     @property
     def net(self):
-        return self.replicas[0][1]
+        return self._reference_model().net if self._mac is not None else self.replicas[0][1]
 
     @property
     def heads(self):
-        return self.replicas[0][2]
+        return self._reference_model().heads if self._mac is not None else self.replicas[0][2]
 
     @classmethod
     def from_pretrained(cls, src="Vision-Decision/Glance-X-Lite", base=None, device=None, dtype=None, revision=None,
@@ -147,6 +155,9 @@ class GlanceX:
                 load_ckpt(sd, net, heads)
                 model = cls(None, None, proc, cfg, device, fast=False)
                 model._mac = MacInference(net, heads, proc, cfg, model.tok)
+                model._load_torch_reference = lambda: cls.from_pretrained(
+                    src, base=base, device=device, revision=revision, fast=False,
+                )
                 model.fast = True
                 return model
         net, heads, proc = build(cfg, device, dtype=dtype)
@@ -324,6 +335,8 @@ class GlanceX:
         confidence when sort=True. With several GPUs the images are split across them and run concurrently.
         images can be an ImageBank (from encode()): then only the request's block runs per image (image_first)."""
         if isinstance(images, ImageBank):
+            if (self._mac is not None) != (images.device == "mlx"):
+                raise ValueError("encode and cached search require the same backend")
             if self._mac is not None:
                 res = self._mac.search_bank(request, images, obj_thr)
             else:

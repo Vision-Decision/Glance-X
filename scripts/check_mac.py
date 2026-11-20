@@ -186,6 +186,7 @@ def main():
     ap.add_argument("--output", type=Path)
     ap.add_argument("--save-reference", action="store_true")
     ap.add_argument("--compare-only", action="store_true")
+    ap.add_argument("--vision-fp32", action="store_true")
     ap.add_argument("--text-batch", type=int, default=16)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--limit", type=int)
@@ -206,6 +207,8 @@ def main():
         model = GlanceX.from_pretrained(args.ckpt, base=args.base, device="mps", fast=not args.save_reference)
         if not args.save_reference and model._mac is None:
             ap.error("MLX is required for candidate inference")
+        if args.vision_fp32 and not args.save_reference:
+            model._mac.vision.use_fp32_arithmetic()
         predict(model, args.gate, args.reference if args.save_reference else args.output,
                 args.save_reference, args.text_batch, modes, args.resume, args.limit)
     if not args.save_reference:
