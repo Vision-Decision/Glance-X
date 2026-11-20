@@ -38,7 +38,13 @@ class Linear:
         dtype = self.compute_dtype
         flat = x.astype(dtype).reshape(-1, x.shape[-1])
         weight = self.w.astype(dtype)
-        y = flat @ weight if self.bias is None else mx.addmm(self.bias.astype(dtype), flat, weight)
+        if self.bias is not None:
+            y = mx.addmm(self.bias.astype(dtype), flat, weight)
+        elif dtype == mx.float16 and flat.shape[0] <= 16:
+            # Metal's narrow-output kernel streams these weights faster with M and N exchanged.
+            y = (weight.T @ flat.T).T
+        else:
+            y = flat @ weight
         return y.reshape(*x.shape[:-1], self.w.shape[-1])
 
 
@@ -190,7 +196,7 @@ class MPSVision:
 
 class GatedDelta:
     def __init__(self, mod):
-        self.in_proj = Linear(mod.in_proj_qkv, mod.in_proj_z, mod.in_proj_b, mod.in_proj_a)
+        self.in_proj = Linear(mod.in_proj_qkv, mod.in_proj_z, mod.in_proj_b, mod.in_proj_a, contiguous=True)
         self.out_proj = Linear(mod.out_proj)
         self.splits = [2 * mod.key_dim + mod.value_dim, 2 * mod.key_dim + 2 * mod.value_dim]
         self.splits.append(self.splits[-1] + mod.num_v_heads)
@@ -219,8 +225,11 @@ class GatedDelta:
         q = _l2(q.reshape(batch, length, self.hk, self.dk), mx.array(self.dk**-0.5))
         k = _l2(k.reshape(batch, length, self.hk, self.dk), mx.array(1.0))
         v = v.reshape(batch, length, self.hv, self.dv)
-        o, final = delta_rule(q, k, v, _decay(a, self.log_scale, self.bias), mx.sigmoid(b.astype(mx.float32)),
-                              initial, rows, save_state)
+        vectorize = length >= 128 or batch >= 64
+        o, final = delta_rule(
+            q, k, v, _decay(a, self.log_scale, self.bias), mx.sigmoid(b.astype(mx.float32)), initial, rows, save_state,
+            width=8 if vectorize else 16, vector=4 if vectorize else 1,
+        )
         y = _gated_norm(o, z.reshape(v.shape), self.norm).reshape(batch, length, -1)
         return y, (final, history[:, -keep:]) if save_state else None
 
@@ -236,18 +245,29 @@ class Attention:
     def project(self, x):
         return mx.split(self.in_proj(x), self.splits, axis=-1)
 
+    def project_readout(self, x):
+        # Only the last query is consumed at the end of a cached search.
+        q_width = self.splits[0]
+        flat = x.astype(self.in_proj.w.dtype).reshape(-1, x.shape[-1])
+        last = x[:, -1:].astype(flat.dtype).reshape(-1, flat.shape[-1])
+        q = (last @ self.in_proj.w[:, :q_width]).reshape(x.shape[0], 1, -1)
+        kv = (flat @ self.in_proj.w[:, q_width:]).reshape(*x.shape[:2], -1)
+        return (q, *mx.split(kv, [self.splits[1] - q_width], axis=-1))
+
     def mix(self, projected, rope, mask, state=None, rows=None):
         q, k, v = projected
-        b, t = q.shape[:2]
-        q, g = mx.split(q.reshape(b, t, -1, 2 * self.d), 2, axis=-1)
-        q = _rotate(self.q_norm(q), *rope).astype(v.dtype).transpose(0, 2, 1, 3)
-        k = _rotate(self.k_norm(k.reshape(b, t, -1, self.d)), *rope).astype(v.dtype).transpose(0, 2, 1, 3)
-        v = v.reshape(b, t, -1, self.d).transpose(0, 2, 1, 3)
+        b, tq = q.shape[:2]
+        tk = k.shape[1]
+        q, g = mx.split(q.reshape(b, tq, -1, 2 * self.d), 2, axis=-1)
+        q_rope = tuple(r[:, -tq:] for r in rope)
+        q = _rotate(self.q_norm(q), *q_rope).astype(v.dtype).transpose(0, 2, 1, 3)
+        k = _rotate(self.k_norm(k.reshape(b, tk, -1, self.d)), *rope).astype(v.dtype).transpose(0, 2, 1, 3)
+        v = v.reshape(b, tk, -1, self.d).transpose(0, 2, 1, 3)
         if state is not None:
             kp, vp = state if rows is None else tuple(a[rows] for a in state)
             k, v = mx.concatenate([kp, k], axis=2), mx.concatenate([vp, v], axis=2)
         attn = mx.fast.scaled_dot_product_attention(q, k, v, scale=self.scale, mask=mask)
-        return attn.transpose(0, 2, 1, 3).reshape(b, t, -1) * mx.sigmoid(g.reshape(b, t, -1)), (k, v)
+        return attn.transpose(0, 2, 1, 3).reshape(b, tq, -1) * mx.sigmoid(g.reshape(b, tq, -1)), (k, v)
 
 
 class DecoderLayer:
@@ -257,7 +277,7 @@ class DecoderLayer:
         self.pre = rms_norm(layer.input_layernorm)
         self.post = rms_norm(layer.post_attention_layernorm)
         self.up = Linear(layer.mlp.gate_proj, layer.mlp.up_proj)
-        self.down = Linear(layer.mlp.down_proj)
+        self.down = Linear(layer.mlp.down_proj, contiguous=True)
 
     def mlp(self, x):
         return x + self.down(_swi_glu(*mx.split(self.up(self.post(x)), 2, axis=-1)))
@@ -270,12 +290,20 @@ class DecoderLayer:
             mix, state = self.mix.mix(self.mix.project(h), rope, mask)
         return self.mlp(x + self.mix.out_proj(mix)), state
 
-    def branch(self, x, rope, mask, state, rows=None):
-        h = self.mix.project(self.pre(x))
-        if self.gdn:
-            mix, _ = self.mix.mix(h, state, rows)
+    def branch(self, x, rope, mask, state, readout_only=False):
+        if readout_only and not self.gdn:
+            h = self.mix.project_readout(self.pre(x))
+            x = x[:, -1:]
+            mask = mask[..., -1:, :] if mask is not None else None
         else:
-            mix, _ = self.mix.mix(h, rope, mask, state, rows)
+            h = self.mix.project(self.pre(x))
+        batch = state[0].shape[0]
+        if x.shape[0] != batch:
+            h = tuple(mx.broadcast_to(t, (batch, *t.shape[1:])) for t in h)
+        if self.gdn:
+            mix, _ = self.mix.mix(h, state)
+        else:
+            mix, _ = self.mix.mix(h, rope, mask, state)
         return self.mlp(x + self.mix.out_proj(mix))
 
     def paired(self, xp, xq, valid, rope_p, rope_q, mask_p, mask_q, rows):

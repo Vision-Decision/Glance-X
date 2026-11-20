@@ -108,9 +108,7 @@ def predict(model, root, out_path, exact, batch_size, modes=MODES, resume=False,
                     bank = model.encode([image])
                     preds = (model._mac.search_bank(request, bank, 0.5, diagnostics=True)[0] for request in requests)
                 else:
-                    n = batch_size if mode == "text_first" else len(rows)
-                    preds = (pair for a in range(0, len(rows), n)
-                             for pair in model._mac.ask(image, requests[a:a+n], model._check_mode(mode), 0.5, diagnostics=True))
+                    preds = model._mac.ask(image, requests, model._check_mode(mode), 0.5, diagnostics=True)
                 for row, (result, diagnostics) in zip(rows, preds, strict=True):
                     print(json.dumps(dict(row, mode=mode, **asdict(result), **diagnostics), allow_nan=False), file=f)
             f.flush()

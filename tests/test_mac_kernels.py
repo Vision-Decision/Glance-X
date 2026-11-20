@@ -5,7 +5,8 @@ import pytest
 import torch
 
 
-def test_delta_rule_branches_from_fp32_state():
+@pytest.mark.parametrize("width, vector", [(16, 1), (8, 4)])
+def test_delta_rule_branches_from_fp32_state(width, vector):
     mx = pytest.importorskip("mlx.core")
     if not mx.metal.is_available():
         pytest.skip("requires an Apple GPU")
@@ -24,10 +25,10 @@ def test_delta_rule_branches_from_fp32_state():
 
     prefix = 7
     to_mlx = lambda x: mx.array(x.numpy())
-    p, st = delta_rule(*(to_mlx(x[:, :prefix]) for x in (q, k, v, g.exp(), beta)))
+    p, st = delta_rule(*(to_mlx(x[:, :prefix]) for x in (q, k, v, g.exp(), beta)), width=width, vector=vector)
     rows = torch.tensor([1, 0])
     tail = (to_mlx(x[:, prefix:]) for x in (q, k, v, g.exp(), beta))
-    y, final = delta_rule(*tail, st, to_mlx(rows.int()), save_state=True)
+    y, final = delta_rule(*tail, st, to_mlx(rows.int()), save_state=True, width=width, vector=vector)
 
     ref, cached = torch_chunk_gated_delta_rule(
         q[:, :prefix] * dim**0.5, k[:, :prefix], v[:, :prefix], g[:, :prefix], beta[:, :prefix],
