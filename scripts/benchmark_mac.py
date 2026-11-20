@@ -100,9 +100,10 @@ def profile_reference(model, image, mode, repeats):
     return {k: median(s[k] for s in sample) for k in sample[0]}
 
 
-def profile_mlx_operators(model, image, repeats):
+def profile_mlx_operators(call, repeats):
     import mlx.core as mx
     from glancex import _mac_layers
+    from glancex._mac import BoxDecoder
 
     counts = Counter()
     scope = "LM"
@@ -117,33 +118,38 @@ def profile_mlx_operators(model, image, repeats):
             return out
         return call
 
-    def vision(fn):
-        def call(*args):
+    def in_scope(fn, label):
+        def invoke(*args, **kwargs):
             nonlocal scope
-            scope = "vision"
+            previous = scope
+            scope = label
             try:
-                return fn(*args)
+                return fn(*args, **kwargs)
             finally:
-                scope = "LM"
-        return call
+                scope = previous
+        return invoke
 
     tracked = [
         (_mac_layers.Linear, "__call__", "projection"),
         (mx.fast, "scaled_dot_product_attention", "SDPA"),
         (_mac_layers, "delta_rule", "delta"),
         (_mac_layers, "depthwise_silu", "convolution"),
+        (mx.fast, "rms_norm", "RMS norm"),
+        (mx.fast, "layer_norm", "LayerNorm"),
     ]
-    model.find(image, REQUEST)
+    call()
     samples = []
     with ExitStack() as stack:
         mx.disable_compile()
         stack.callback(mx.enable_compile)
-        stack.enter_context(patch.object(_mac_layers.Vision, "__call__", vision(_mac_layers.Vision.__call__)))
+        stack.enter_context(patch.object(_mac_layers.Vision, "__call__", in_scope(_mac_layers.Vision.__call__, "vision")))
+        for name in ("prepare", "decode"):
+            stack.enter_context(patch.object(BoxDecoder, name, in_scope(getattr(BoxDecoder, name), "heads")))
         for obj, attr, label in tracked:
             stack.enter_context(patch.object(obj, attr, timed(getattr(obj, attr), label)))
         for _ in range(repeats):
             counts.clear()
-            _, ms = elapsed(lambda: model.find(image, REQUEST), mx.synchronize)
+            _, ms = elapsed(call, mx.synchronize)
             samples.append(dict(counts, total=ms))
     return {k: median(s[k] for s in samples) for k in samples[0]}
 
@@ -268,8 +274,8 @@ def run(model, args, sync, checkpoint, trace, baselines):
                 ), flush=True)
             print(f"probe {n} bandwidth: {probe['bandwidth']['read_write_gb_s']:.1f} GB/s", flush=True)
             data.append(dict(engine=args.engine, tokens=n, probe=probe))
-        if args.operators:
-            ops = profile_mlx_operators(model, image, args.runs)
+        if args.operators and not args.workload:
+            ops = profile_mlx_operators(lambda: model.find(image, REQUEST), args.runs)
             print(f"operators {args.engine} N={n}: {json.dumps(ops)}", flush=True)
             data.append(dict(engine=args.engine, tokens=n, operators=ops))
         if args.profile and (args.engine != "mlx" or not args.workload):
@@ -280,7 +286,9 @@ def run(model, args, sync, checkpoint, trace, baselines):
                     stages = model._mac.profile(image, REQUEST, mode, args.runs)
                 print(f"profile {args.engine} N={n} {mode}: {json.dumps(stages)}", flush=True)
                 data.append(dict(engine=args.engine, tokens=n, mode=mode, profile=stages))
-        if args.probe_only or args.operators_only or (args.profile_only and (args.engine != "mlx" or not args.workload)):
+        if args.probe_only or (args.operators_only and not args.workload):
+            continue
+        if args.profile_only and (args.engine != "mlx" or not args.workload):
             continue
         for work in args.workload or [*WORKLOADS[:-1], *(["search256"] if n == 638 else [])]:
             bank = None
@@ -307,6 +315,15 @@ def run(model, args, sync, checkpoint, trace, baselines):
                 else:
                     fn = lambda: model.search(REQUEST, bank, sort=False)
             sync()
+            if args.operators and args.workload:
+                ops = profile_mlx_operators(fn, args.runs)
+                print(f"operators {args.engine} N={n} {work}: {json.dumps(ops)}", flush=True)
+                data.append(dict(engine=args.engine, tokens=n, workload=work, operators=ops))
+                checkpoint(data, complete=False)
+                if args.operators_only:
+                    del fn
+                    bank = None
+                    continue
             if args.profile and args.engine == "mlx" and (work not in ("ask1", "text1") or args.workload):
                 stage_profile = model._mac.profile_call(fn, args.runs)
                 print(f"workload profile {args.engine} N={n} {work}: {json.dumps(stage_profile)}", flush=True)
