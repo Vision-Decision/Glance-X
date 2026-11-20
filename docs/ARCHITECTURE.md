@@ -58,3 +58,12 @@ In `image_first`, the image never reads a request, so every layer's image state 
 
 `devices=[...]` puts one replica on each GPU and splits batches across them. `fast=False` is the exact
 training-time computation.
+
+
+On Apple silicon, install the optional backend with `pip install -e '.[mac]'`. When the device is MPS,
+`GlanceX.from_pretrained` uses MLX by default for Glance-X-Lite, with merged fp16 projection weights, fp32
+residuals, and fp32 DeltaNet cache state. `fast=False` selects the original PyTorch path. An explicit Torch
+dtype also selects PyTorch. Create and query an image bank with the same backend.
+
+`python -m scripts.benchmark_mac --help` shows the synchronized benchmark options.
+`python -m scripts.check_mac --help` shows how to save and compare both directions against the fp32 MPS gate.
