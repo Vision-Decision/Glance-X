@@ -9,7 +9,7 @@ from functools import wraps
 import json
 from pathlib import Path
 from statistics import median
-from time import perf_counter
+from time import perf_counter, sleep
 from unittest.mock import patch
 import warnings
 
@@ -35,15 +35,20 @@ def elapsed(fn, sync):
     return result, (perf_counter() - start) * 1000
 
 
-def measure(fn, sync, repeats, warmup, trace=None, expected=None):
+def measure(fn, sync, repeats, warmup, trace=None, expected=None, spacing_ms=0):
     before_trace = trace() if trace else 0.0
     result, first = elapsed(fn, sync)
     if expected is not None and len(result) != expected:
         raise RuntimeError(f"Expected {expected} outputs, got {len(result)}")
     del result
     first_trace = trace() - before_trace if trace else None
-    warm = [elapsed(fn, sync)[1] for _ in range(warmup)]
-    samples = [elapsed(fn, sync)[1] for _ in range(repeats)]
+    def repeated():
+        if spacing_ms:
+            sleep(spacing_ms / 1000)
+        return elapsed(fn, sync)[1]
+
+    warm = [repeated() for _ in range(warmup)]
+    samples = [repeated() for _ in range(repeats)]
     data = dict(first_ms=first, warmup_ms=warm, median_ms=median(samples), samples_ms=samples)
     if first_trace is not None:
         data["first_graph_trace_ms"] = first_trace
@@ -337,7 +342,7 @@ def run(model, args, sync, checkpoint, trace, baselines):
                 import mlx.core as mx
                 mx.reset_peak_memory()
             counts = dict(ask8=8, encode=1, search1=1, search256=256)
-            row = measure(fn, sync, args.runs, args.warmup, trace, counts.get(work))
+            row = measure(fn, sync, args.runs, args.warmup, trace, counts.get(work), spacing_ms=args.spacing_ms)
             if args.engine == "mlx":
                 row["device_peak_bytes"] = mx.get_peak_memory()
             if bank is not None:
@@ -373,6 +378,7 @@ def main():
     parser.add_argument("--engine", choices=("reference", "mps16", "mlx"), default="mlx")
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--warmup", type=int, default=3)
+    parser.add_argument("--spacing-ms", type=float, default=0, help="wait between timed calls outside the clock")
     parser.add_argument("--tokens", type=int, choices=FLOORS, action="append")
     parser.add_argument("--workload", choices=WORKLOADS, action="append")
     parser.add_argument("--bank-seeds", type=int, default=8)
@@ -389,6 +395,8 @@ def main():
     args = parser.parse_args()
     if args.runs < 10 or args.warmup < 1:
         parser.error("use at least 10 measured runs and one warm-up run")
+    if args.spacing_ms < 0:
+        parser.error("--spacing-ms must be nonnegative")
     args.profile |= args.profile_only
     args.probe |= args.probe_only
     args.operators |= args.operators_only
@@ -460,7 +468,8 @@ def main():
 
         def checkpoint(data, complete):
             if args.output:
-                payload = dict(load_ms=load_ms, engine=args.engine, vision=args.vision, complete=complete, data=data)
+                payload = dict(load_ms=load_ms, engine=args.engine, vision=args.vision, complete=complete,
+                               spacing_ms=args.spacing_ms, data=data)
                 args.output.write_text(json.dumps(payload, indent=2) + "\n")
 
         data = run(model, args, sync, checkpoint, trace, baselines)
