@@ -117,6 +117,41 @@ def predict(model, root, out_path, exact, batch_size, modes=MODES, resume=False,
     partial.replace(out_path)
 
 
+def recheck_precision(model, root, source, output):
+    """Reuse unaltered predictions and run the production fp32 replay on every selected row."""
+    from glancex._mac import REFINE_CENTER_GAP, REFINE_PRESENCE
+
+    candidate = read_rows(source)
+    limit = float(np.float32(REFINE_CENTER_GAP))
+    min_presence = float(np.float32(REFINE_PRESENCE))
+    lookup = {tuple(r["key"]): r for r in candidate if r["mode"] == "text_first"}
+    refined = 0
+    for index, (name, rows) in enumerate(gate_requests(root).items(), 1):
+        text = [lookup[tuple(r["key"])] for r in rows]
+        batches = []
+        # Preserve the original boundaries, then select within each batch as the public path does.
+        for a in range(0, len(text), 8):
+            batch = [r for r in text[a:a+8]
+                     if r["present_prob"] >= min_presence and r["center_logits"][0] - r["center_logits"][1] <= limit]
+            if batch:
+                batches.append(batch)
+        if batches:
+            groups = [[r["request"] for r in batch] for batch in batches]
+            predictions = model._mac.refine_text_groups(str(root / "images" / name), groups, 0.5)
+            for batch, preds in zip(batches, predictions, strict=True):
+                for row, (result, diagnostics) in zip(batch, preds, strict=True):
+                    row.update(asdict(result), **diagnostics, precision_refined=True)
+                    refined += 1
+        if index % 10 == 0:
+            print(f"{index}/100 images checked, {refined} precision replays", flush=True)
+    partial = output.with_suffix(".partial.jsonl")
+    with partial.open("w") as f:
+        for row in candidate:
+            print(json.dumps(row, allow_nan=False), file=f)
+    partial.replace(output)
+    print(f"Replayed {refined} ambiguous text-first requests", flush=True)
+
+
 def metrics(rows, name):
     records = []
     for r in rows:
@@ -184,6 +219,7 @@ def main():
     ap.add_argument("--output", type=Path)
     ap.add_argument("--save-reference", action="store_true")
     ap.add_argument("--compare-only", action="store_true")
+    ap.add_argument("--refine-from", type=Path, help="replay the fp32 guard on a complete pre-refinement candidate file")
     ap.add_argument("--vision-fp32", action="store_true")
     ap.add_argument("--text-batch", type=int, default=16)
     ap.add_argument("--resume", action="store_true")
@@ -192,6 +228,8 @@ def main():
     ap.add_argument("--near-tie-margin", type=float, help="allow a listed top-two centre flip within this exact logit margin")
     args = ap.parse_args()
     modes = args.mode or (MODES if args.save_reference else CANDIDATE_MODES)
+    if args.refine_from and (args.save_reference or args.compare_only or args.mode or args.limit):
+        ap.error("--refine-from requires the complete gate and candidate inference")
     if args.save_reference and "cached" in modes:
         ap.error("cached predictions are compared to the exact image_first path")
     if not args.save_reference and not args.output:
@@ -207,8 +245,11 @@ def main():
             ap.error("MLX is required for candidate inference")
         if args.vision_fp32 and not args.save_reference:
             model._mac.vision.use_fp32_arithmetic()
-        predict(model, args.gate, args.reference if args.save_reference else args.output,
-                args.save_reference, args.text_batch, modes, args.resume, args.limit)
+        if args.refine_from:
+            recheck_precision(model, args.gate, args.refine_from, args.output)
+        else:
+            predict(model, args.gate, args.reference if args.save_reference else args.output,
+                    args.save_reference, args.text_batch, modes, args.resume, args.limit)
     if not args.save_reference:
         print("| Direction | Requests | Max Δ presence | Max Δ confidence | Max Δ edge (px) | Violations | Ties | Count match |")
         print("|---|---:|---:|---:|---:|---:|---:|---:|")

@@ -54,9 +54,9 @@ def main():
         if args.variant and label not in args.variant:
             continue
 
-        def project(self, x):
+        def project(self, x, compute_dtype=None):
             if self not in use_float:
-                return original(self, x)
+                return original(self, x, compute_dtype)
             f = x.astype(mx.float32).reshape(-1, x.shape[-1])
             w = self.w.astype(mx.float32)
             y = f @ w if self.bias is None else mx.addmm(self.bias.astype(mx.float32), f, w)

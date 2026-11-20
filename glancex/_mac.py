@@ -2,6 +2,7 @@
 
 import math
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from statistics import median
 from time import perf_counter
@@ -140,6 +141,12 @@ def _block_mask(prefix, valid, bidir=True):
     return mx.concatenate([mx.broadcast_to(prefix[:, None], (rows, length, prefix.shape[1])), within], axis=-1)[:, None]
 
 
+# Ambiguous centres can change the box or its IoU confidence. Replay text-first
+# blocks with fp32 arithmetic over the same stored weights in this score window.
+REFINE_CENTER_GAP = 0.006
+REFINE_PRESENCE = 0.05
+
+
 class MacInference:
     def __init__(self, net, heads, processor, cfg, tok):
         merge_lora(net.hf)
@@ -160,6 +167,7 @@ class MacInference:
         self._timings = None
         self.query_layers = mx.compile(self._query_layers)
         self.paired_layers = mx.compile(self._paired_layers)
+        self.precise_layers = mx.compile(partial(self._paired_layers, compute_dtype=mx.float32))
         self.image_layers = mx.compile(self._image_layers)
 
     def _stage(self, name, fn, *args):
@@ -203,15 +211,15 @@ class MacInference:
             self.geometry[gh, gw] = values
         return self.geometry[gh, gw]
 
-    def _image(self, pixels, features):
+    def _image(self, pixels, features, compute_dtype=None):
         pos, centers = self._geometry(pixels)
         start_end = self.embedding[mx.array([self.tok.vs, self.tok.ve])].astype(mx.float32)
         hidden = mx.concatenate([start_end[:1], features, start_end[1:]], axis=0)[None]
         valid = mx.ones(hidden.shape[:2], mx.bool_)
         rope = self._rope(pos)
-        return self._unimodal(hidden, valid, rope, "causal"), pos, centers, valid, rope
+        return self._unimodal(hidden, valid, rope, "causal", compute_dtype), pos, centers, valid, rope
 
-    def _text(self, requests):
+    def _text(self, requests, compute_dtype=None):
         ids = [self.tok.text(req) for req in requests]
         length = max(map(len, ids))
         tokens = np.full((len(ids), length), self.tok.pad, dtype=np.int32)
@@ -224,12 +232,12 @@ class MacInference:
         valid = mx.array(pos != 0)
         positions = mx.repeat(mx.array(pos)[..., None], 3, axis=-1)
         mask = _causal(valid)
-        hidden = self._unimodal(hidden, valid, self._rope(positions), mask)
+        hidden = self._unimodal(hidden, valid, self._rope(positions), mask, compute_dtype)
         return hidden, positions, valid, counts
 
-    def _unimodal(self, x, valid, rope, mask):
+    def _unimodal(self, x, valid, rope, mask, compute_dtype=None):
         for layer in self.uni:
-            x, _ = layer.stream(x, valid, rope, mask)
+            x, _ = layer.stream(x, valid, rope, mask, compute_dtype=compute_dtype)
         return x
 
     def _encode(self, im):
@@ -245,9 +253,9 @@ class MacInference:
             states.append(state)
         return x, states
 
-    def _paired_layers(self, xp, xq, p_valid, p_rope, q_rope, p_mask, q_mask, rows):
+    def _paired_layers(self, xp, xq, p_valid, p_rope, q_rope, p_mask, q_mask, rows, compute_dtype=None):
         for layer in self.fusion:
-            xp, xq = layer.paired(xp, xq, p_valid, p_rope, q_rope, p_mask, q_mask, rows)
+            xp, xq = layer.paired(xp, xq, p_valid, p_rope, q_rope, p_mask, q_mask, rows, compute_dtype)
         return xp, xq
 
     def _query_layers(self, x, rope, mask, states):
@@ -255,12 +263,13 @@ class MacInference:
             x = layer.branch(x, rope, mask, state, readout_only=i == len(states) - 1)
         return self.norm(x[:, -1])
 
-    def _fuse(self, image, text, mode):
+    def _fuse(self, image, text, mode, compute_dtype=None):
         xi, ip, _, iv, ir = image
         xt, tp, tv, counts = text
         batch, length = xt.shape[:2]
         rows = mx.zeros((batch,), mx.uint32)
         bidir = self.cfg.bidir_block_mask == "block_bidir"
+        paired_layers = self.paired_layers if compute_dtype is None else self.precise_layers
         if mode == "i2t":
             pi = mx.arange(length)[None] + mx.array(length - counts)[:, None]
             xq = mx.take_along_axis(xt, mx.minimum(pi, length - 1)[..., None], axis=1)
@@ -269,7 +278,7 @@ class MacInference:
             qv = mx.arange(length)[None] < mx.array(counts)[:, None]
             all_valid = bool(np.all(counts == length))
             mask = None if all_valid and bidir else _block_mask(iv[rows], qv, bidir)
-            xi, xq = self.paired_layers(xi, xq, iv, ir, qr, "causal", mask, rows)
+            xi, xq = paired_layers(xi, xq, iv, ir, qr, "causal", mask, rows)
             return self.norm(xq[mx.arange(batch), mx.array(counts - 1)]), self.norm(xi[:, 1:-1]), rows
         xp, pv = xt[:, :-1], tv[:, :-1]
         xq = mx.concatenate([mx.broadcast_to(xi, (batch, *xi.shape[1:])), xt[:, -1:]], axis=1)
@@ -277,12 +286,12 @@ class MacInference:
         qr, pr = self._rope(pos), self._rope(tp[:, :-1])
         pm = _causal(pv)
         qm = None if bool(np.all(counts == length)) and bidir else _block_mask(pv, mx.ones(xq.shape[:2], mx.bool_), bidir)
-        xp, xq = self.paired_layers(xp, xq, pv, pr, qr, pm, qm, None)
+        xp, xq = paired_layers(xp, xq, pv, pr, qr, pm, qm, None)
         return self.norm(xq[:, -1]), self.norm(xq[:, 1:-2]), rows
 
-    def _results(self, decoded, wh, requests, threshold, start=0, diagnostics=False, per_image=False):
+    def _results(self, decoded, wh, requests, threshold, start=0, diagnostics=False, per_image=False, ambiguity=None):
         p, piou, boxes, scores, logits = decoded
-        mx.eval(p, piou, boxes, scores)
+        mx.eval(p, piou, boxes, scores, ambiguity)
         p, piou, boxes, scores = map(np.asarray, (p, piou, boxes, scores))
         result = []
         for i, (w, h) in enumerate(wh):
@@ -299,29 +308,62 @@ class MacInference:
             )))
         return result
 
-    def ask(self, image, requests, mode, threshold, max_tokens=None, diagnostics=False):
+    def _decode_requests(self, im, requests, mode, compute_dtype=None):
+        txt = self._stage("text modality", self._text, requests, compute_dtype)
+        read, vis, rows = self._stage("fusion", self._fuse, im, txt, mode, compute_dtype)
+        centers, valid = im[2], im[3][:, 1:-1]
+        if mode == "t2i":
+            centers = mx.broadcast_to(centers, (len(requests), *centers.shape[1:]))
+            valid = mx.broadcast_to(valid, (len(requests), valid.shape[1]))
+            rows = None
+        return self._stage("heads", lambda: self.box.decode(read, self.box.prepare(vis), centers, valid, rows))
+
+    @staticmethod
+    def _ambiguity(decoded):
+        p, _, _, _, logits = decoded
+        if logits.shape[1] < 2:
+            return None
+        top = mx.topk(logits, 2, axis=1)
+        return (p >= REFINE_PRESENCE) & (mx.abs(top[:, 0] - top[:, 1]) <= REFINE_CENTER_GAP)
+
+    def ask(self, image, requests, mode, threshold, max_tokens=None, diagnostics=False, *, precise=False):
         if not requests:
             return []
         pixels, wh = self._stage("preprocess", self._load, image, max_tokens)
         features = self._stage("vision", self.vision, pixels)
-        im = self._stage("image modality", self._image, pixels, features)
+        dtype = mx.float32 if precise else None
+        im = self._stage("image modality", self._image, pixels, features, dtype)
+        refined_image = None
         out = []
         chunk = 8 if mode == "t2i" else 64
         for a in range(0, len(requests), chunk):
             req = requests[a:a+chunk]
-            txt = self._stage("text modality", self._text, req)
-            read, vis, rows = self._stage("fusion", self._fuse, im, txt, mode)
-            centers, valid = im[2], im[3][:, 1:-1]
-            if mode == "t2i":
-                centers = mx.broadcast_to(centers, (len(req), *centers.shape[1:]))
-                valid = mx.broadcast_to(valid, (len(req), valid.shape[1]))
-                rows = None
-            decoded = self._stage("heads", lambda: self.box.decode(read, self.box.prepare(vis), centers, valid, rows))
+            decoded = self._decode_requests(im, req, mode, dtype)
+            ambiguity = self._ambiguity(decoded) if mode == "t2i" and not precise else None
             start = perf_counter()
-            out.extend(self._results(decoded, [wh] * len(req), req, threshold, diagnostics=diagnostics))
+            batch = self._results(decoded, [wh] * len(req), req, threshold, diagnostics=diagnostics, ambiguity=ambiguity)
             if self._timings is not None:
                 self._timings["result conversion"] = self._timings.get("result conversion", 0) + (perf_counter() - start) * 1000
+            if ambiguity is not None:
+                indices = np.flatnonzero(np.asarray(ambiguity))
+                if len(indices):
+                    if refined_image is None:
+                        refined_image = self._image(pixels, features, mx.float32)
+                    selected = [req[i] for i in indices]
+                    refined = self._decode_requests(refined_image, selected, mode, mx.float32)
+                    for i, result in zip(indices, self._results(refined, [wh] * len(indices), selected, threshold,
+                                                              diagnostics=diagnostics)):
+                        batch[i] = result
+            out.extend(batch)
         return out
+
+    def refine_text_groups(self, image, groups, threshold):
+        """Replay selected text-first groups using the same precision path as ask()."""
+        pixels, wh = self._load(image, None)
+        im = self._image(pixels, self.vision(pixels), mx.float32)
+        for requests in groups:
+            decoded = self._decode_requests(im, requests, "t2i", mx.float32)
+            yield self._results(decoded, [wh] * len(requests), requests, threshold, diagnostics=True)
 
     def encode(self, images, batch_size):
         banks = []
