@@ -227,7 +227,7 @@ def probe_mlx(model, tokens, runs, warmup):
         q, k = (mx.random.normal(shape) / 128**0.5 for _ in range(2))
         v = mx.random.normal(shape).astype(mx.float16)
         decay, beta = mx.full(shape[:-1], 0.8), mx.full(shape[:-1], 0.7)
-        state = None if length > 16 else mx.zeros((batch, 16, 128, 128))
+        state = None if length > 16 else mx.random.normal((batch, 16, 128, 128)) * 0.02
         mx.eval(q, k, v, decay, beta, state)
         delta[f"B={batch} L={length}"] = {}
         for width, vector in ((8, 1), (16, 1), (32, 1), (8, 4), (16, 4), (32, 4)):
@@ -379,6 +379,8 @@ def main():
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--spacing-ms", type=float, default=0, help="wait between timed calls outside the clock")
+    parser.add_argument("--wired-mib", type=int, help="keep MLX allocations resident up to this process limit")
+    parser.add_argument("--cache-mib", type=int, help="cap the free MLX allocator cache")
     parser.add_argument("--tokens", type=int, choices=FLOORS, action="append")
     parser.add_argument("--workload", choices=WORKLOADS, action="append")
     parser.add_argument("--bank-seeds", type=int, default=8)
@@ -397,6 +399,10 @@ def main():
         parser.error("use at least 10 measured runs and one warm-up run")
     if args.spacing_ms < 0:
         parser.error("--spacing-ms must be nonnegative")
+    if any(n is not None and n < 0 for n in (args.wired_mib, args.cache_mib)):
+        parser.error("allocator limits must be nonnegative")
+    if args.engine != "mlx" and (args.wired_mib is not None or args.cache_mib is not None):
+        parser.error("allocator limits require --engine mlx")
     args.profile |= args.profile_only
     args.probe |= args.probe_only
     args.operators |= args.operators_only
@@ -452,6 +458,14 @@ def main():
         return original_compile(tracked, **kwargs)
 
     with ExitStack() as stack:
+        if args.cache_mib is not None:
+            stack.callback(mx.set_cache_limit, mx.set_cache_limit(args.cache_mib * 2**20))
+        if args.wired_mib is not None:
+            wired = args.wired_mib * 2**20
+            if wired > mx.device_info()["max_recommended_working_set_size"]:
+                parser.error("--wired-mib exceeds the device's recommended working set")
+            stack.callback(mx.set_wired_limit, mx.set_wired_limit(wired))
+            stack.callback(mx.synchronize)
         trace = None
         if args.trace_compile:
             if args.engine != "mlx":
@@ -469,7 +483,7 @@ def main():
         def checkpoint(data, complete):
             if args.output:
                 payload = dict(load_ms=load_ms, engine=args.engine, vision=args.vision, complete=complete,
-                               spacing_ms=args.spacing_ms, data=data)
+                               spacing_ms=args.spacing_ms, wired_mib=args.wired_mib, cache_mib=args.cache_mib, data=data)
                 args.output.write_text(json.dumps(payload, indent=2) + "\n")
 
         data = run(model, args, sync, checkpoint, trace, baselines)
