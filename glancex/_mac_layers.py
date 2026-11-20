@@ -34,8 +34,8 @@ class Linear:
             dtype,
         )
 
-    def __call__(self, x):
-        dtype = self.compute_dtype
+    def __call__(self, x, compute_dtype=None):
+        dtype = self.compute_dtype if compute_dtype is None else compute_dtype
         flat = x.astype(dtype).reshape(-1, x.shape[-1])
         weight = self.w.astype(dtype)
         if self.bias is not None:
@@ -206,8 +206,8 @@ class GatedDelta:
         self.hk, self.hv = mod.num_k_heads, mod.num_v_heads
         self.dk, self.dv = mod.head_k_dim, mod.head_v_dim
 
-    def project(self, x):
-        return mx.split(self.in_proj(x), self.splits, axis=-1)
+    def project(self, x, compute_dtype=None):
+        return mx.split(self.in_proj(x, compute_dtype), self.splits, axis=-1)
 
     def mix(self, projected, state=None, rows=None, save_state=False):
         qkv, z, b, a = projected
@@ -242,8 +242,8 @@ class Attention:
         self.scale, self.d = mod.scaling, mod.head_dim
         self.splits = [mod.q_proj.out_features, mod.q_proj.out_features + mod.k_proj.out_features]
 
-    def project(self, x):
-        return mx.split(self.in_proj(x), self.splits, axis=-1)
+    def project(self, x, compute_dtype=None):
+        return mx.split(self.in_proj(x, compute_dtype), self.splits, axis=-1)
 
     def project_readout(self, x):
         # Only the last query is consumed at the end of a cached search.
@@ -279,16 +279,18 @@ class DecoderLayer:
         self.up = Linear(layer.mlp.gate_proj, layer.mlp.up_proj)
         self.down = Linear(layer.mlp.down_proj, contiguous=True)
 
-    def mlp(self, x):
-        return x + self.down(_swi_glu(*mx.split(self.up(self.post(x)), 2, axis=-1)))
+    def mlp(self, x, compute_dtype=None):
+        streams = mx.split(self.up(self.post(x), compute_dtype), 2, axis=-1)
+        return x + self.down(_swi_glu(*streams), compute_dtype)
 
-    def stream(self, x, valid, rope, mask, save_state=False):
+    def stream(self, x, valid, rope, mask, save_state=False, compute_dtype=None):
         h = self.pre(x)
         if self.gdn:
-            mix, state = self.mix.mix(self.mix.project(h * valid[..., None]), save_state=save_state)
+            projected = self.mix.project(h * valid[..., None], compute_dtype)
+            mix, state = self.mix.mix(projected, save_state=save_state)
         else:
-            mix, state = self.mix.mix(self.mix.project(h), rope, mask)
-        return self.mlp(x + self.mix.out_proj(mix)), state
+            mix, state = self.mix.mix(self.mix.project(h, compute_dtype), rope, mask)
+        return self.mlp(x + self.mix.out_proj(mix, compute_dtype), compute_dtype), state
 
     def branch(self, x, rope, mask, state, readout_only=False):
         if readout_only and not self.gdn:
@@ -306,7 +308,7 @@ class DecoderLayer:
             mix, _ = self.mix.mix(h, rope, mask, state)
         return self.mlp(x + self.mix.out_proj(mix))
 
-    def paired(self, xp, xq, valid, rope_p, rope_q, mask_p, mask_q, rows):
+    def paired(self, xp, xq, valid, rope_p, rope_q, mask_p, mask_q, rows, compute_dtype=None):
         # Project both streams against the same weights in one GEMM.
         p, q = xp.shape[:2], xq.shape[:2]
         a, b = self.pre(xp), self.pre(xq)
@@ -314,7 +316,7 @@ class DecoderLayer:
             a = a * valid[..., None]
         n = math.prod(p)
         packed = mx.concatenate([a.reshape(n, -1), b.reshape(math.prod(q), -1)])
-        hp, hq = zip(*((z[:n].reshape(*p, -1), z[n:].reshape(*q, -1)) for z in self.mix.project(packed)))
+        hp, hq = zip(*((z[:n].reshape(*p, -1), z[n:].reshape(*q, -1)) for z in self.mix.project(packed, compute_dtype)))
         if self.gdn:
             op, st = self.mix.mix(hp, save_state=True)
             oq, _ = self.mix.mix(hq, st, rows)
@@ -323,5 +325,5 @@ class DecoderLayer:
             oq, _ = self.mix.mix(hq, rope_q, mask_q, st, rows)
         mixed = mx.concatenate([op.reshape(n, -1), oq.reshape(math.prod(q), -1)])
         residual = mx.concatenate([xp.reshape(n, -1), xq.reshape(math.prod(q), -1)])
-        y = self.mlp(residual + self.mix.out_proj(mixed))
+        y = self.mlp(residual + self.mix.out_proj(mixed, compute_dtype), compute_dtype)
         return y[:n].reshape(xp.shape), y[n:].reshape(xq.shape)
