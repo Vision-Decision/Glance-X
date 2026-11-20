@@ -1,6 +1,6 @@
 """Speed (and box accuracy on the same samples) of Glance-X vs TypeSafe Jev's Box question.
 
-Both systems get identical inputs, picked from a record file (default: the Glance-Data eval set):
+Both systems get identical inputs, picked from a record file (default: the Glance-COCO eval set):
   one image, N requests : the record with the most requests; its first N requests
                           Jev       : ONE request, the image in `state`, N Box questions
                           Glance-X  : ask(image, N requests), image_first (one forward)

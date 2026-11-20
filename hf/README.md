@@ -25,8 +25,8 @@ tags:
 <p align="center">
   <a href="https://github.com/Vision-Decision/Glance-X"><img src="https://img.shields.io/badge/GitHub-Glance--X-181717?logo=github&logoColor=white" alt="GitHub: Glance-X"></a>
   <a href="https://github.com/Vision-Decision/Glanece-Training"><img src="https://img.shields.io/badge/training-Glanece--Training-181717?logo=github&logoColor=white" alt="Training code"></a>
-  <a href="https://github.com/Vision-Decision/Glance-Data"><img src="https://img.shields.io/badge/data-Glance--Data%20(GitHub)-181717?logo=github&logoColor=white" alt="Glance-Data on GitHub"></a>
-  <a href="https://huggingface.co/datasets/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/data-Glance--COCO%20(HF)-FFD21E?logo=huggingface&logoColor=000" alt="Glance-Data on Hugging Face"></a>
+  <a href="https://github.com/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/data-Glance--COCO%20(GitHub)-181717?logo=github&logoColor=white" alt="Glance-COCO on GitHub"></a>
+  <a href="https://huggingface.co/datasets/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/data-Glance--COCO%20(HF)-FFD21E?logo=huggingface&logoColor=000" alt="Glance-COCO on Hugging Face"></a>
   <a href="https://huggingface.co/Qwen/Qwen3.5-0.8B-Base"><img src="https://img.shields.io/badge/base-Qwen3.5--0.8B--Base-7C3AED" alt="Base model"></a>
   <img src="https://img.shields.io/badge/weights-CC%20BY--NC--SA%204.0-6B7280" alt="Weights license">
 </p>
@@ -97,7 +97,7 @@ Full splits, Acc@0.5 (%):
 | RefCOCOg val / test | 87.5 / 87.7 | 85.9 / 85.5 |
 | **8-split mean** | **87.8** | **85.9** |
 | gRefCOCO val: AUROC of P(present) / multi-target F1 | 97.4 / 75.0 | 96.4 / **76.1** |
-| Glance-Data: Acc@0.5 / multi-target F1 | 86.4 / 59.6 | 85.8 / **64.6** |
+| Glance-COCO: Acc@0.5 / multi-target F1 | 86.4 / 59.6 | 85.8 / **64.6** |
 
 Latency on one H200, end to end (ms, N = 1 / 16 / 64 / 128):
 
@@ -116,7 +116,7 @@ For comparison, the 4B Glance-X2 scores 91.3 on the RefCOCO-family mean. Full ta
 - **Schedule:** 2 epochs (6,100 steps at 8 images per step), half of the batches in each direction, about 75 minutes
   on one H200.
 - **Data:** the RefCOCO family plus gRefCOCO negatives (355k requests) and
-  [Glance-Data](https://github.com/Vision-Decision/Glance-Data) (1.83M requests).
+  [Glance-COCO](https://github.com/Vision-Decision/Glance-COCO) (1.83M requests).
 - **Code:** [Glanece-Training](https://github.com/Vision-Decision/Glanece-Training), `configs/lite/glance-x-lite.json`.
 
 ## Limitations and license

@@ -14,7 +14,7 @@
   <a href="https://huggingface.co/Qwen/Qwen3.5-0.8B-Base"><img src="https://img.shields.io/badge/base-Qwen3.5--0.8B--Base-7C3AED" alt="基座：Qwen3.5-0.8B-Base"></a>
   <a href="https://huggingface.co/Vision-Decision/Glance-X-Lite"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-Glance--X--Lite-FFD21E?logo=huggingface&logoColor=000" alt="Hugging Face 模型：Glance-X-Lite"></a>
   <a href="https://github.com/Vision-Decision/Glanece-Training"><img src="https://img.shields.io/badge/training-Glanece--Training-181717?logo=github&logoColor=white" alt="训练代码：Glanece-Training"></a>
-  <a href="https://github.com/Vision-Decision/Glance-Data"><img src="https://img.shields.io/badge/data-Glance--Data-181717?logo=github&logoColor=white" alt="Glance-Data (GitHub)"></a>
+  <a href="https://github.com/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/data-Glance--COCO-181717?logo=github&logoColor=white" alt="Glance-COCO (GitHub)"></a>
   <a href="https://huggingface.co/datasets/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20dataset-Glance--COCO-FFD21E?logo=huggingface&logoColor=000" alt="Glance-COCO (Hugging Face)"></a>
   <img src="https://img.shields.io/badge/weights-CC%20BY--NC--SA%204.0-6B7280" alt="权重许可：CC BY-NC-SA 4.0">
   <a href="LICENSE"><img src="https://img.shields.io/badge/code-Apache%202.0-2F80ED?logo=apache&logoColor=white" alt="代码许可：Apache-2.0"></a>
@@ -144,7 +144,7 @@ gRefCOCO（无目标、单目标、多目标表达），%：
 | testA：多目标 F1 | 71.1 | **71.8** |
 | testB：多目标 F1 | 59.8 | **62.2** |
 
-Glance-Data 评测集：300 张留出图片、23,586 句需求，覆盖短、长、口语和中文需求，相似负例，以及多目标需求。它与一部分训练数据同分布。
+Glance-COCO 评测集：300 张留出图片、23,586 句需求，覆盖短、长、口语和中文需求，相似负例，以及多目标需求。它与一部分训练数据同分布。
 
 | 指标 | Lite `image_first` | Lite `text_first` |
 |---|:-:|:-:|
@@ -181,7 +181,7 @@ Jev 的时间包含从我们服务器发出的网络往返；Jev 对 N 张新图
 - 只针对自然照片：训练数据是 COCO，不是截图或文档。
 - 图片缓存每张图约占 25 MB 内存。
 - 不支持 `joint`：Lite 只训练了上面两个方向，调用 `joint` 会报错。
-- 权重为 CC BY-NC-SA 4.0，仅限**非商业用途**，因为训练数据（gRefCOCO、Glance-Data）是非商业的。代码为 Apache-2.0。
+- 权重为 CC BY-NC-SA 4.0，仅限**非商业用途**，因为训练数据（gRefCOCO、Glance-COCO）是非商业的。代码为 Apache-2.0。
 
 ## 引用
 
@@ -198,6 +198,6 @@ Jev 的时间包含从我们服务器发出的网络往返；Jev 对 N 张新图
 
 - [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base)：基座模型。
 - [Glance](https://github.com/Vision-Decision/Glance)：框的做法。
-- [Glance-Data](https://github.com/Vision-Decision/Glance-Data)：新的需求类型。
+- [Glance-COCO](https://github.com/Vision-Decision/Glance-COCO)：新的需求类型。
 - [flash-linear-attention](https://github.com/fla-org/flash-linear-attention)：Gated DeltaNet 内核。
 - 数据集：RefCOCO / RefCOCO+ / RefCOCOg、gRefCOCO、MS COCO。

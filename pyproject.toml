@@ -27,7 +27,7 @@ dev = ["pytest", "ruff"]
 Homepage = "https://github.com/Vision-Decision/Glance-X"
 Weights = "https://huggingface.co/Vision-Decision/Glance-X-Lite"
 Training = "https://github.com/Vision-Decision/Glanece-Training"
-Data = "https://github.com/Vision-Decision/Glance-Data"
+Data = "https://github.com/Vision-Decision/Glance-COCO"
 
 [tool.setuptools]
 packages = ["glancex"]

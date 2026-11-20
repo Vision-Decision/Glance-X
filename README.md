@@ -14,7 +14,7 @@
   <a href="https://huggingface.co/Qwen/Qwen3.5-0.8B-Base"><img src="https://img.shields.io/badge/base-Qwen3.5--0.8B--Base-7C3AED" alt="Base model: Qwen3.5-0.8B-Base"></a>
   <a href="https://huggingface.co/Vision-Decision/Glance-X-Lite"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20model-Glance--X--Lite-FFD21E?logo=huggingface&logoColor=000" alt="Model on Hugging Face: Glance-X-Lite"></a>
   <a href="https://github.com/Vision-Decision/Glanece-Training"><img src="https://img.shields.io/badge/training-Glanece--Training-181717?logo=github&logoColor=white" alt="Training code: Glanece-Training"></a>
-  <a href="https://github.com/Vision-Decision/Glance-Data"><img src="https://img.shields.io/badge/data-Glance--Data-181717?logo=github&logoColor=white" alt="Glance-Data (GitHub)"></a>
+  <a href="https://github.com/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/data-Glance--COCO-181717?logo=github&logoColor=white" alt="Glance-COCO (GitHub)"></a>
   <a href="https://huggingface.co/datasets/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20dataset-Glance--COCO-FFD21E?logo=huggingface&logoColor=000" alt="Glance-COCO (Hugging Face)"></a>
   <img src="https://img.shields.io/badge/weights-CC%20BY--NC--SA%204.0-6B7280" alt="Weights: CC BY-NC-SA 4.0">
   <a href="LICENSE"><img src="https://img.shields.io/badge/code-Apache%202.0-2F80ED?logo=apache&logoColor=white" alt="Code license: Apache-2.0"></a>
@@ -150,7 +150,7 @@ gRefCOCO, which has expressions with no target, one target or several targets (%
 | testA: multi-target F1 | 71.1 | **71.8** |
 | testB: multi-target F1 | 59.8 | **62.2** |
 
-Glance-Data eval set: 300 held-out images and 23,586 requests, covering short, long, casual and Chinese requests,
+Glance-COCO eval set: 300 held-out images and 23,586 requests, covering short, long, casual and Chinese requests,
 look-alike negatives and multi-target requests. It has the same distribution as part of the training data.
 
 | Metric | Lite `image_first` | Lite `text_first` |
@@ -192,7 +192,7 @@ Mac numbers will be added once measured.
 - `joint` is not available: Lite was trained in the two directions above only, and the API raises an error for
   `joint`.
 - The weights are CC BY-NC-SA 4.0, for **non-commercial use** only, because the training data (gRefCOCO,
-  Glance-Data) is non-commercial. The code is Apache-2.0.
+  Glance-COCO) is non-commercial. The code is Apache-2.0.
 
 ## Citation
 
@@ -209,6 +209,6 @@ Mac numbers will be added once measured.
 
 - [Qwen3.5](https://huggingface.co/Qwen/Qwen3.5-0.8B-Base): the base model.
 - [Glance](https://github.com/Vision-Decision/Glance): the box recipe.
-- [Glance-Data](https://github.com/Vision-Decision/Glance-Data): the new request types.
+- [Glance-COCO](https://github.com/Vision-Decision/Glance-COCO): the new request types.
 - [flash-linear-attention](https://github.com/fla-org/flash-linear-attention): Gated DeltaNet kernels.
 - Datasets: RefCOCO / RefCOCO+ / RefCOCOg, gRefCOCO and MS COCO.

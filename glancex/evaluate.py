@@ -5,7 +5,7 @@ python -m glancex.evaluate --ckpt Vision-Decision/Glance-X-Lite --mode image_fir
     [--glance_data GLANCE_DATA_VAL.jsonl] [--limit_images 300] --out res.json
 
 Two groups of results: the original benchmarks (RefCOCO / RefCOCOg / gRefCOCO, human labels) and our own
-Glance-Data eval set (pipeline-generated, held-out images), reported per kind / language. Per set:
+Glance-COCO eval set (pipeline-generated, held-out images), reported per kind / language. Per set:
   acc50          single-target questions: argmax-center box IoU >= 0.5 with the target
   multi_f1       multi-target questions: decoded box set vs targets (greedy match at IoU 0.5)
   multi_hit_any  multi-target questions: the single box hits one of the targets
@@ -109,7 +109,7 @@ def main():
     ap.add_argument("--prep_dir", default="data/prep", help="folder with eval_<set>.jsonl records")
     ap.add_argument("--image_root", default="data/images/coco_train2014", help="COCO train2014 images")
     ap.add_argument("--glance_data", "--diag", dest="glance_data", default="",
-                    help="Glance-Data eval set (held-out images, pipeline-generated)")
+                    help="Glance-COCO eval set (held-out images, pipeline-generated)")
     ap.add_argument("--limit_images", type=int, default=0)
     ap.add_argument("--images_per_batch", type=int, default=0, help="0: 8 for i2t, 1 for t2i / bi")
     ap.add_argument("--obj_thr", type=float, default=0.5)

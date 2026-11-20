@@ -354,7 +354,7 @@ def main():
         else:
             frames += scene_ask(sc, fonts, logo, a.image_root, title=sc.get("title"))
     frames += card(fonts, banner, [("github.com/Vision-Decision/Glance-X", 26, FG),
-                                   ("built on Qwen3.5-0.8B-Base · trained on RefCOCO family + Glance-Data", 18, MUTED),
+                                   ("built on Qwen3.5-0.8B-Base · trained on RefCOCO family + Glance-COCO", 18, MUTED),
                                    ("images: MS COCO (cocodataset.org), Flickr terms of use", 15, DIM)], total=3.2)
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     p = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
