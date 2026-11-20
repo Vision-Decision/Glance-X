@@ -131,6 +131,17 @@ The MPS path and its latency have not been tested yet.
 
 ## Results
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-table-lite-dark.svg">
+  <img width="100%" alt="Benchmark table: Glance-X-Lite (0.8B, image_first) against Glance-X-4B (joint) and Glance-4B-preview on the 8 RefCOCO splits, gRefCOCO no-target rejection, AUROC of P(present) and multi-target F1. Blue cells where Lite is best, grey where a larger model is best." src="assets/benchmark-table-lite-light.svg">
+</picture>
+
+<sub>Lite `image_first` against the two 4B models. Blue: Lite best in the row; grey: a larger model is best. Values
+from this repository's [docs/RESULTS.md](docs/RESULTS.md) and
+[Glanece-Training docs/RESULTS.md](https://github.com/Vision-Decision/Glanece-Training/blob/main/docs/RESULTS.md);
+Glance-4B-preview from its [benchmark sources](https://github.com/Vision-Decision/Glance/blob/main/docs/benchmark_sources.md).
+The same table for Glance-X-4B: [light](assets/benchmark-table-4b-light.png), [dark](assets/benchmark-table-4b-dark.png).</sub>
+
 Full splits, Acc@0.5 (%). Each direction is evaluated separately with the same weights. Larger Glance-X models (4B)
 are shown for reference.
 
