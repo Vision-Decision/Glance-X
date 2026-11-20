@@ -10,7 +10,7 @@ import mlx.core as mx
 import numpy as np
 
 from glancex import GlanceX
-from glancex._mac_layers import Linear
+from glancex._mac_layers import Linear, Vision
 from scripts.check_mac import gate_requests, read_rows
 
 
@@ -34,22 +34,21 @@ def main():
         if a["present_prob"] > 0.5 and max(abs(x-y) for x, y in zip(a["box"], b["box"])) > args.min_error:
             cases[mode].append(a)
     file_of = {tuple(row["key"]): args.gate / "images" / f for f, rows in gate_requests(args.gate).items() for row in rows}
-    model = GlanceX.from_pretrained(args.ckpt, args.base, device="mps")
+    from glancex import _mac
+    with patch.object(_mac, "Vision", lambda module, proc: Vision(module, proc, precise=False)):
+        model = GlanceX.from_pretrained(args.ckpt, args.base, device="mps")
     vlm = model._mac
     vision = {vlm.vision.patch, vlm.vision.m_up, vlm.vision.m_down}
     vision.update(v for block in vlm.vision.blocks for v in block if isinstance(v, Linear))
     lm = {v for layer in vlm.layers for v in (layer.mix.in_proj, layer.mix.out_proj, layer.up, layer.down)}
     delta = {layer.mix.in_proj for layer in vlm.layers if layer.gdn}
     original = Linear.__call__
-    patch_embed = {vlm.vision.patch}
     attention = {v for block in vlm.vision.blocks for v in block[1:3]}
     mlp = {v for block in vlm.vision.blocks for v in block[5:]}
-    merger = {vlm.vision.m_up, vlm.vision.m_down}
 
     mx.disable_compile()
     for label, use_float in (
-        ("patch", patch_embed), ("attention", attention), ("vision_mlp", mlp),
-        ("patch_and_attention", patch_embed | attention), ("patch_and_merger", patch_embed | merger),
+        ("attention", attention), ("vision_mlp", mlp),
         ("half", set()), ("vision32", vision), ("delta_in32", delta), ("lm32", lm), ("all32", vision | lm),
     ):
         if args.variant and label not in args.variant:

@@ -61,8 +61,8 @@ training-time computation.
 
 
 On Apple silicon, install the optional backend with `pip install -e '.[mac]'`. When the device is MPS,
-`GlanceX.from_pretrained` uses MLX by default for Glance-X-Lite, with merged fp16 projection weights, fp32
-residuals, and fp32 DeltaNet cache state. `fast=False` selects the original PyTorch path. An explicit Torch
+`GlanceX.from_pretrained` uses MLX by default for Glance-X-Lite. It stores merged projection weights in fp16
+and uses fp32 for vision arithmetic, language residuals, and DeltaNet cache state. `fast=False` selects the original PyTorch path. An explicit Torch
 dtype also selects PyTorch. Create and query an image bank with the same backend.
 
 `python -m scripts.benchmark_mac --help` shows the synchronized benchmark options.

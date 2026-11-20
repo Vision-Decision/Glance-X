@@ -23,7 +23,7 @@ FLOORS = {
     374: dict(ask1=288.5, ask8=321.9, text1=288.9, encode=283.7, search1=11.2, search256=1222.3),
     638: dict(ask1=529.6, ask8=563.5, text1=530.1, encode=524.8, search1=11.3, search256=1237.8),
 }
-REQUEST = "the giraffe on the right"
+REQUEST = "the giraffe on the right of the picture"
 WORKLOADS = tuple(FLOORS[374])
 
 
@@ -143,7 +143,8 @@ def probe_mlx(model, tokens, runs, warmup):
     """Calibrate layout-sensitive GEMMs and streaming bandwidth on this machine."""
     import mlx.core as mx
 
-    from glancex._mac_kernels import delta_rule, skinny_matmul, skinny_mma
+    from glancex._mac_kernels import delta_rule
+    from scripts._mac_projection_probe import skinny_matmul, skinny_mma
 
     rows = {}
     vlm = model._mac
@@ -166,8 +167,16 @@ def probe_mlx(model, tokens, runs, warmup):
             result["tflops"] = 2 * m * k * n / result["median_ms"] / 1e9
             result["shape"] = [m, k, n]
             rows[label][name] = result
+        if label.startswith("vision"):
+            xf, wf = x.astype(mx.float32), w.astype(mx.float32)
+            mx.eval(xf, wf)
+            result = measure(lambda: mx.eval(xf @ wf), mx.synchronize, runs, warmup)
+            result["tflops"] = 2 * m * k * n / result["median_ms"] / 1e9
+            rows[label]["fp32 arithmetic"] = result
         if m <= 16:
             for name, op in [
+                ("swap M and N", lambda x, w: (w @ x.T).T),
+                ("pad M to 16", lambda x, w: (mx.pad(x, [(0, 16 - m), (0, 0)]) @ w.T)[:m]),
                 ("custom narrow", skinny_matmul),
                 ("SIMD matrix 128", lambda x, w: skinny_mma(x, w, 128)),
                 ("SIMD matrix 256", skinny_mma),
@@ -210,7 +219,7 @@ def image_tokens(model, path):
     return w // 32 * (h // 32)
 
 
-def run(model, args, sync):
+def run(model, args, sync, checkpoint):
     with args.gate.joinpath("eval_refcoco_val.jsonl").open() as f:
         records = [json.loads(line) for line in f]
     coco = [str(args.gate / "images" / r["file"]) for r in records if (r["W"], r["H"]) == (640, 480)]
@@ -270,10 +279,18 @@ def run(model, args, sync):
                 else:
                     fn = lambda: model.search(REQUEST, bank, sort=False)
             sync()
+            if args.engine == "mlx":
+                import mlx.core as mx
+                mx.reset_peak_memory()
             row = measure(fn, sync, args.runs, args.warmup)
+            if args.engine == "mlx":
+                row["device_peak_bytes"] = mx.get_peak_memory()
+            if bank is not None:
+                row["bank_bytes"] = bank.nbytes
             floor = FLOORS[n][work]
             row.update(engine=args.engine, tokens=n, workload=work, floor_ms=floor, target_ms=floor / 0.85)
             data.append(row)
+            checkpoint(data, complete=False)
             ms = row["median_ms"]
             warm = ", ".join(f"{t:.1f}" for t in row["warmup_ms"])
             print(f"| {args.engine} | {n} | {work} | {ms:.2f} | {floor / 0.85:.2f} | {100 * ms / floor:.1f}% | "
@@ -291,6 +308,8 @@ def main():
     parser.add_argument("--base")
     parser.add_argument("--demo", type=Path, required=True)
     parser.add_argument("--gate", type=Path, required=True)
+    parser.add_argument("--vision", choices=("mlx32", "mlx16", "mps32"), default="mlx32",
+                        help="vision arithmetic and backend, with fp16 stored weights")
     parser.add_argument("--engine", choices=("reference", "mps16", "mlx"), default="mlx")
     parser.add_argument("--runs", type=int, default=10)
     parser.add_argument("--warmup", type=int, default=3)
@@ -320,7 +339,13 @@ def main():
         import mlx.core as mx
         sync = mx.synchronize
     def load():
-        model = GlanceX.from_pretrained(args.ckpt, base=args.base, device="mps", fast=args.engine == "mlx")
+        with ExitStack() as stack:
+            if args.engine == "mlx" and args.vision != "mlx32":
+                from glancex import _mac
+                from glancex._mac_layers import MPSVision, Vision
+                tower = MPSVision if args.vision == "mps32" else lambda module, proc: Vision(module, proc, precise=False)
+                stack.enter_context(patch.object(_mac, "Vision", tower))
+            model = GlanceX.from_pretrained(args.ckpt, base=args.base, device="mps", fast=args.engine == "mlx")
         if args.engine == "mps16":
             from glancex.inference import merge_lora
             merge_lora(model.net.hf)
@@ -330,12 +355,17 @@ def main():
         return model
 
     model, load_ms = elapsed(load, sync)
-    print(f"{args.engine} model load {load_ms:.1f} ms, request block {len(model.tok.text(REQUEST))} tokens", flush=True)
+    print(f"{args.engine} model load {load_ms:.1f} ms, request block {len(model.tok.text(REQUEST))} tokens, "
+          f"vision {args.vision if args.engine == 'mlx' else args.engine}", flush=True)
     print("| Engine | N | Workload | Median (ms) | Target (ms) | % of floor | First (ms) | Warm-ups (ms) |", flush=True)
     print("|---|---:|---|---:|---:|---:|---:|---:|", flush=True)
-    data = run(model, args, sync)
-    if args.output:
-        args.output.write_text(json.dumps(dict(load_ms=load_ms, data=data), indent=2) + "\n")
+    def checkpoint(data, complete):
+        if args.output:
+            payload = dict(load_ms=load_ms, engine=args.engine, vision=args.vision, complete=complete, data=data)
+            args.output.write_text(json.dumps(payload, indent=2) + "\n")
+
+    data = run(model, args, sync, checkpoint)
+    checkpoint(data, complete=True)
 
 
 if __name__ == "__main__":
