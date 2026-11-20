@@ -8,7 +8,7 @@
 <p align="center"><b>English</b> · <a href="README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
-  <a href="https://github.com/Vision-Decision/Glance-X/actions/workflows/ci.yml"><img src="https://github.com/Vision-Decision/Glance-X/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Vision-Decision/Glance-X-MLX/actions/workflows/ci.yml"><img src="https://github.com/Vision-Decision/Glance-X-MLX/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/PyTorch-2.4%2B-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch 2.4+">
   <a href="https://huggingface.co/Qwen/Qwen3.5-0.8B-Base"><img src="https://img.shields.io/badge/base-Qwen3.5--0.8B--Base-7C3AED" alt="Base model: Qwen3.5-0.8B-Base"></a>
@@ -84,7 +84,7 @@ including the ones that did not work, are in [Glanece-Training](https://github.c
 ## Quick start
 
 ```bash
-git clone https://github.com/Vision-Decision/Glance-X && cd Glance-X
+git clone https://github.com/Vision-Decision/Glance-X-MLX && cd Glance-X-MLX
 pip install -e ".[fla]"        # drop [fla] on machines without a CUDA GPU
 ```
 
@@ -201,7 +201,7 @@ Mac numbers will be added once measured.
   title  = {Glance-X: find any object from a text request, both ways},
   author = {Vision-Decision},
   year   = {2026},
-  url    = {https://github.com/Vision-Decision/Glance-X}
+  url    = {https://github.com/Vision-Decision/Glance-X-MLX}
 }
 ```
 

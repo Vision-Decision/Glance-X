@@ -8,7 +8,7 @@
 <p align="center"><a href="README.md">English</a> · <b>简体中文</b></p>
 
 <p align="center">
-  <a href="https://github.com/Vision-Decision/Glance-X/actions/workflows/ci.yml"><img src="https://github.com/Vision-Decision/Glance-X/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/Vision-Decision/Glance-X-MLX/actions/workflows/ci.yml"><img src="https://github.com/Vision-Decision/Glance-X-MLX/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white" alt="Python 3.10+">
   <img src="https://img.shields.io/badge/PyTorch-2.4%2B-EE4C2C?logo=pytorch&logoColor=white" alt="PyTorch 2.4+">
   <a href="https://huggingface.co/Qwen/Qwen3.5-0.8B-Base"><img src="https://img.shields.io/badge/base-Qwen3.5--0.8B--Base-7C3AED" alt="基座：Qwen3.5-0.8B-Base"></a>
@@ -80,7 +80,7 @@ racket"*。它会给每个符合的物体画一个**框**，或者回答**图里
 ## 快速上手
 
 ```bash
-git clone https://github.com/Vision-Decision/Glance-X && cd Glance-X
+git clone https://github.com/Vision-Decision/Glance-X-MLX && cd Glance-X-MLX
 pip install -e ".[fla]"        # 没有 CUDA GPU 的机器去掉 [fla]
 ```
 
@@ -190,7 +190,7 @@ Jev 的时间包含从我们服务器发出的网络往返；Jev 对 N 张新图
   title  = {Glance-X: find any object from a text request, both ways},
   author = {Vision-Decision},
   year   = {2026},
-  url    = {https://github.com/Vision-Decision/Glance-X}
+  url    = {https://github.com/Vision-Decision/Glance-X-MLX}
 }
 ```
 

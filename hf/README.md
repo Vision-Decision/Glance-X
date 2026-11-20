@@ -23,7 +23,7 @@ tags:
 </p>
 
 <p align="center">
-  <a href="https://github.com/Vision-Decision/Glance-X"><img src="https://img.shields.io/badge/GitHub-Glance--X-181717?logo=github&logoColor=white" alt="GitHub: Glance-X"></a>
+  <a href="https://github.com/Vision-Decision/Glance-X-MLX"><img src="https://img.shields.io/badge/GitHub-Glance--X--MLX-181717?logo=github&logoColor=white" alt="GitHub: Glance-X"></a>
   <a href="https://github.com/Vision-Decision/Glanece-Training"><img src="https://img.shields.io/badge/training-Glanece--Training-181717?logo=github&logoColor=white" alt="Training code"></a>
   <a href="https://github.com/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/data-Glance--COCO%20(GitHub)-181717?logo=github&logoColor=white" alt="Glance-COCO on GitHub"></a>
   <a href="https://huggingface.co/datasets/Vision-Decision/Glance-COCO"><img src="https://img.shields.io/badge/data-Glance--COCO%20(HF)-FFD21E?logo=huggingface&logoColor=000" alt="Glance-COCO on Hugging Face"></a>
@@ -46,10 +46,10 @@ around every match, or says the object is not in the image. It is a 0.8B model w
 
 ## Use it
 
-The code is on GitHub: **[Vision-Decision/Glance-X](https://github.com/Vision-Decision/Glance-X)**.
+The code is on GitHub: **[Vision-Decision/Glance-X-MLX](https://github.com/Vision-Decision/Glance-X-MLX)**.
 
 ```bash
-pip install "glancex[fla] @ git+https://github.com/Vision-Decision/Glance-X"     # drop [fla] without a CUDA GPU
+pip install "glancex[fla] @ git+https://github.com/Vision-Decision/Glance-X-MLX"     # drop [fla] without a CUDA GPU
 ```
 
 ```python
@@ -108,7 +108,7 @@ Latency on one H200, end to end (ms, N = 1 / 16 / 64 / 128):
 | one request, N new images (`text_first`) | 38 / 181 / 658 / 1,293 |
 
 For comparison, the 4B Glance-X2 scores 91.3 on the RefCOCO-family mean. Full tables are in
-[RESULTS.md](https://github.com/Vision-Decision/Glance-X/blob/main/docs/RESULTS.md).
+[RESULTS.md](https://github.com/Vision-Decision/Glance-X-MLX/blob/main/docs/RESULTS.md).
 
 ## Training
 

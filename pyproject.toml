@@ -24,7 +24,7 @@ fla = ["flash-linear-attention"]
 dev = ["pytest", "ruff"]
 
 [project.urls]
-Homepage = "https://github.com/Vision-Decision/Glance-X"
+Homepage = "https://github.com/Vision-Decision/Glance-X-MLX"
 Weights = "https://huggingface.co/Vision-Decision/Glance-X-Lite"
 Training = "https://github.com/Vision-Decision/Glanece-Training"
 Data = "https://github.com/Vision-Decision/Glance-COCO"
