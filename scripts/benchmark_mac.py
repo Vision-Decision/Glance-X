@@ -122,11 +122,13 @@ def profile_mlx_operators(model, image, repeats):
         (_mac_layers.Linear, "__call__", "projection"),
         (mx.fast, "scaled_dot_product_attention", "SDPA"),
         (_mac_layers, "delta_rule", "delta"),
-        (mx, "conv1d", "convolution"),
+        (_mac_layers, "depthwise_silu", "convolution"),
     ]
     model.find(image, REQUEST)
     samples = []
     with ExitStack() as stack:
+        mx.disable_compile()
+        stack.callback(mx.enable_compile)
         stack.enter_context(patch.object(_mac_layers.Vision, "__call__", vision(_mac_layers.Vision.__call__)))
         for obj, attr, label in tracked:
             stack.enter_context(patch.object(obj, attr, timed(getattr(obj, attr), label)))
@@ -140,6 +142,8 @@ def profile_mlx_operators(model, image, repeats):
 def probe_mlx(model, tokens, runs, warmup):
     """Calibrate layout-sensitive GEMMs and streaming bandwidth on this machine."""
     import mlx.core as mx
+
+    from glancex._mac_kernels import delta_rule, skinny_matmul, skinny_mma
 
     rows = {}
     vlm = model._mac
@@ -162,11 +166,42 @@ def probe_mlx(model, tokens, runs, warmup):
             result["tflops"] = 2 * m * k * n / result["median_ms"] / 1e9
             result["shape"] = [m, k, n]
             rows[label][name] = result
+        if m <= 16:
+            for name, op in [
+                ("custom narrow", skinny_matmul),
+                ("SIMD matrix 128", lambda x, w: skinny_mma(x, w, 128)),
+                ("SIMD matrix 256", skinny_mma),
+                ("SIMD matrix 512", lambda x, w: skinny_mma(x, w, 512)),
+            ]:
+                result = measure(lambda: mx.eval(op(x, w.T)), mx.synchronize, runs, warmup)
+                result["tflops"] = 2 * m * k * n / result["median_ms"] / 1e9
+                rows[label][name] = result
+    delta = {}
+    for batch, length in ((1, tokens + 2), (1, len(model.tok.text(REQUEST))), (256, len(model.tok.text(REQUEST)))):
+        shape = (batch, length, 16, 128)
+        q, k = (mx.random.normal(shape) / 128**0.5 for _ in range(2))
+        v = mx.random.normal(shape).astype(mx.float16)
+        decay, beta = mx.full(shape[:-1], 0.8), mx.full(shape[:-1], 0.7)
+        state = None if length > 16 else mx.zeros((batch, 16, 128, 128))
+        mx.eval(q, k, v, decay, beta, state)
+        delta[f"B={batch} L={length}"] = {}
+        for width in (8, 16, 32):
+            fn = lambda: mx.eval(delta_rule(q, k, v, decay, beta, state, save_state=state is None, width=width))
+            delta[f"B={batch} L={length}"][width] = measure(fn, mx.synchronize, runs, warmup)
+    q, k, v = (mx.random.normal((1, 4 * tokens, 12, 64)).astype(mx.float16).transpose(0, 2, 1, 3) for _ in range(3))
+    mx.eval(q, k, v)
+    attention = {}
+    for name, fn in [
+        ("default", lambda: mx.fast.scaled_dot_product_attention(q, k, v, scale=0.125)),
+        ("forced fused", lambda: mx.fast.scaled_dot_product_attention(q, k, v, scale=0.125, force_fused=True)),
+        ("separate", lambda: mx.softmax((q @ k.swapaxes(-1, -2)) * 0.125, axis=-1, precise=True) @ v),
+    ]:
+        attention[name] = measure(lambda: mx.eval(fn()), mx.synchronize, runs, warmup)
     x = mx.zeros((256 * 1024 * 1024,), dtype=mx.float16)
     mx.eval(x)
     speed = measure(lambda: mx.eval(x + 1), mx.synchronize, runs, warmup)
     speed["read_write_gb_s"] = 2 * x.nbytes / speed["median_ms"] / 1e6
-    return dict(projections=rows, bandwidth=speed)
+    return dict(projections=rows, bandwidth=speed, delta=delta, vision_sdpa=attention)
 
 
 def image_tokens(model, path):
@@ -189,6 +224,10 @@ def run(model, args, sync):
             for label, layouts in probe["projections"].items():
                 print(f"probe {n} {label}: " + ", ".join(
                     f"{layout} {info['median_ms']:.3f} ms / {info['tflops']:.2f} TF/s" for layout, info in layouts.items()
+                ), flush=True)
+            for label, variants in {**probe["delta"], "vision SDPA": probe["vision_sdpa"]}.items():
+                print(f"probe {n} {label}: " + ", ".join(
+                    f"{variant} {info['median_ms']:.3f} ms (first {info['first_ms']:.2f})" for variant, info in variants.items()
                 ), flush=True)
             print(f"probe {n} bandwidth: {probe['bandwidth']['read_write_gb_s']:.1f} GB/s", flush=True)
             data.append(dict(engine=args.engine, tokens=n, probe=probe))

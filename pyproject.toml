@@ -21,6 +21,7 @@ dependencies = [
 
 [project.optional-dependencies]
 fla = ["flash-linear-attention"]
+mac = ["mlx>=0.32.4; platform_system == 'Darwin' and platform_machine == 'arm64'"]
 dev = ["pytest", "ruff"]
 
 [project.urls]

@@ -93,6 +93,7 @@ class GlanceX:
         from .data import Tok
         self.tok = Tok(proc, cfg.max_q_tokens)
         self.fast = fast
+        self._mac = None
         self._pool = ThreadPoolExecutor(max_workers=min(32, os.cpu_count() or 4)) if fast else None
         if fast:
             merge_lora(net.hf)
@@ -120,6 +121,7 @@ class GlanceX:
         """src: a Hugging Face repo id, an exported folder, or a training checkpoint (.pt).
         base: override the Qwen3.5 base (Hugging Face id or local path); default: the one in the config.
         fast: merge LoRA into the base weights and preprocess images on worker threads + the GPU (inference only).
+        With MLX installed on Apple silicon, fast uses the Metal backend in the two trained Lite directions.
         fast=False keeps the exact training-time computation (unmerged LoRA, CPU preprocessing).
         devices: several GPUs, e.g. ["cuda:0", "cuda:1"]; one replica each, batches are split across them.
         cuda_graphs: with fast, replay the language model + heads as CUDA graphs (captured once per shape bucket)."""
@@ -127,12 +129,26 @@ class GlanceX:
             device = devices[0]
         device = device or _default_device()
         on_cuda = str(device).startswith("cuda")
+        use_mlx = fast and str(device) == "mps" and dtype is None and not devices
         dtype = dtype or (torch.bfloat16 if on_cuda else torch.float32)
         sd = load_state(src, revision)
         cfg = Config().update(sd["cfg"]).update(dict(grad_ckpt=False, pad_img_to=0, pad_txt_to=0, pad_txt_block_to=0,
                                                      pad_t2i_block_to=0, pad_bi_block_to=0))
         if base:
             cfg = cfg.update(dict(model_id=base))
+        if use_mlx and float(cfg.mode_probs.split(",")[2]) == 0:
+            try:
+                from ._mac import MacInference
+            except ModuleNotFoundError as exc:
+                if exc.name != "mlx":
+                    raise
+            else:
+                net, heads, proc = build(cfg, "cpu", dtype=torch.float32)
+                load_ckpt(sd, net, heads)
+                model = cls(None, None, proc, cfg, device, fast=False)
+                model._mac = MacInference(net, heads, proc, cfg, model.tok)
+                model.fast = True
+                return model
         net, heads, proc = build(cfg, device, dtype=dtype)
         load_ckpt(sd, net, heads)
         net.eval(); heads.eval()
@@ -231,6 +247,8 @@ class GlanceX:
         """One image, many requests, answered in parallel. Returns one Result per request (input order).
         With several GPUs and >= min_split requests, the requests are split across them."""
         requests = [requests] if isinstance(requests, str) else list(requests)
+        if self._mac is not None:
+            return self._mac.ask(image, requests, self._check_mode(mode), obj_thr, max_vis_tokens)
         if len(self.replicas) == 1 or len(requests) < min_split:
             return self._run(self._items([image], [requests], max_vis_tokens), mode, obj_thr)
         loaded = self._items([image], [requests], max_vis_tokens)[0] if self.fast else None
@@ -249,6 +267,8 @@ class GlanceX:
     @torch.no_grad()
     def encode(self, images, batch_size=32):
         """Encode images once (image_first prefix, request-independent) -> ImageBank for fast search()."""
+        if self._mac is not None:
+            return self._mac.encode(images, batch_size)
         from .fast import IMG_LEN, N_VIS
         cfg = self.cfg.update(dict(pad_img_to=IMG_LEN))
         device, net, _ = self.replicas[0]
@@ -304,7 +324,18 @@ class GlanceX:
         confidence when sort=True. With several GPUs the images are split across them and run concurrently.
         images can be an ImageBank (from encode()): then only the request's block runs per image (image_first)."""
         if isinstance(images, ImageBank):
-            res = self._search_bank(request, images, obj_thr)
+            if self._mac is not None:
+                res = self._mac.search_bank(request, images, obj_thr)
+            else:
+                res = self._search_bank(request, images, obj_thr)
+            return sorted(res, key=lambda r: -r.confidence) if sort else res
+        if self._mac is not None:
+            mode = self._check_mode(mode)
+            res = []
+            for i, img in enumerate(images):
+                result, = self._mac.ask(img, [request], mode, obj_thr, max_vis_tokens)
+                result.image_index = i
+                res.append(result)
             return sorted(res, key=lambda r: -r.confidence) if sort else res
         def part(r, a, b):
             out = []
