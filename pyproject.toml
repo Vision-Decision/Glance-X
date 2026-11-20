@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "glancex"
-version = "0.2.0"
-description = "Glance-X: find objects from a text request with one model that runs image-first, text-first or joint"
+version = "0.3.0"
+description = "Glance-X-Lite: find any object from a text request, image-first or text-first (0.8B)"
 readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.10"
@@ -25,7 +25,8 @@ dev = ["pytest", "ruff"]
 
 [project.urls]
 Homepage = "https://github.com/Vision-Decision/Glance-X"
-Weights = "https://huggingface.co/Vision-Decision/Glance-X-4B"
+Weights = "https://huggingface.co/Vision-Decision/Glance-X-Lite"
+Training = "https://github.com/Vision-Decision/Glanece-Training"
 Data = "https://github.com/Vision-Decision/Glance-Data"
 
 [tool.setuptools]

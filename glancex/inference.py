@@ -1,10 +1,10 @@
 """High-level inference API.
 
     from glancex import GlanceX
-    m = GlanceX.from_pretrained("Vision-Decision/Glance-X-4B")           # or an exported folder, or a training .pt
+    m = GlanceX.from_pretrained("Vision-Decision/Glance-X-Lite")         # or an exported folder, or a training .pt
     m.ask("park.jpg", ["the clear umbrella", "a red bicycle"])            # one image, many requests  (image_first)
-    m.find("farm.jpg", "the two cows lying on the left", mode="joint")    # one image, one request    (joint)
-    m.search("a black cow", ["a.jpg", "b.jpg", "c.jpg"])                  # one request, many images  (text_first)
+    bank = m.encode(photos); m.search("a black cow", bank)                # one request, cached images (image_first)
+    m.search("a black cow", ["a.jpg", "b.jpg"], mode="text_first")        # one request, new images   (text_first)
 """
 import copy
 import os
@@ -19,7 +19,7 @@ from .backbone import canonical_mode
 from .build import build, load_ckpt, load_state
 from .config import Config
 from .data import collate, resize_dims
-from .train import forward_batch, to_dev
+from .forward import forward_batch, to_dev
 
 
 @dataclass
@@ -50,7 +50,7 @@ class Result:
 @dataclass
 class ImageBank:
     """Cached image_first state of N images (GlanceX.encode). Searching it runs only the request's short block per
-    image (+ the two-way decoder), not the vision tower or the image prefix."""
+    image, not the vision tower or the image prefix."""
     data: dict            # states (per fusion layer), p_valid [N,Lp], vis [N,640,D]
     vis_valid: torch.Tensor
     centers: torch.Tensor
@@ -115,7 +115,7 @@ class GlanceX:
         return self.replicas[0][2]
 
     @classmethod
-    def from_pretrained(cls, src="Vision-Decision/Glance-X-4B", base=None, device=None, dtype=None, revision=None,
+    def from_pretrained(cls, src="Vision-Decision/Glance-X-Lite", base=None, device=None, dtype=None, revision=None,
                         fast=True, devices=None, cuda_graphs=True):
         """src: a Hugging Face repo id, an exported folder, or a training checkpoint (.pt).
         base: override the Qwen3.5 base (Hugging Face id or local path); default: the one in the config.
@@ -172,8 +172,17 @@ class GlanceX:
         pv = self.proc.image_processor(images=[img.resize((w, h), Image.BICUBIC)], do_resize=False, return_tensors="pt")
         return self._make_item(pv["pixel_values"], pv["image_grid_thw"][0], requests, (W, H))
 
+    def _check_mode(self, mode):
+        """Only the directions the checkpoint was trained in (Glance-X-Lite: image_first and text_first)."""
+        w = [float(x) for x in self.cfg.mode_probs.split(",")]
+        m = canonical_mode(mode)
+        if w[("i2t", "t2i", "bi").index(m)] <= 0:
+            raise ValueError(f"this checkpoint was not trained in the {mode!r} direction")
+        return m
+
     @torch.no_grad()
     def _run(self, items, mode, obj_thr, replica=0):
+        mode = self._check_mode(mode)
         device, net, heads = self.replicas[replica]
         runner = self.runners[replica] if self.runners else None
         if runner is not None and runner.supports(items):
@@ -274,8 +283,7 @@ class GlanceX:
             bk = bank.slice(a, min(len(bank), a + chunk))
             with torch.autocast("cuda", dtype=torch.bfloat16):
                 o = net.query_bank(bk.data, tb)
-            out = heads(o["r"], o["vis"], bk.vis_valid, bk.centers, o["vis_index"], q_tok=o["q_tok"],
-                        q_valid=o["q_valid"], r_idx=o["r_idx"])
+            out = heads(o["r"], o["vis"], bk.vis_valid, bk.centers, o["vis_index"])
             multi = heads.decode_multi(o["r"], o["vis"], bk.vis_valid, bk.centers, o["vis_index"], out, thr=obj_thr)
             p, piou = out["presence_logit"].float().sigmoid().cpu(), out["iou_logit"].float().sigmoid().cpu()
             box = out["box_pred"].float().clamp(0, 1).cpu()
@@ -287,8 +295,8 @@ class GlanceX:
                                   box_scores=ms.float().tolist(), image_index=a + k))
         return res
 
-    def find(self, image, request, mode="joint", obj_thr=0.5, max_vis_tokens=None):
-        """One image, one request. `joint` lets the image and the request read each other (most accurate)."""
+    def find(self, image, request, mode="image_first", obj_thr=0.5, max_vis_tokens=None):
+        """One image, one request."""
         return self.ask(image, [request], mode=mode, obj_thr=obj_thr, max_vis_tokens=max_vis_tokens)[0]
 
     def search(self, request, images, mode="text_first", batch_size=64, obj_thr=0.5, sort=True, max_vis_tokens=None):

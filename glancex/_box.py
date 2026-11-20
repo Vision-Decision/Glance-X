@@ -92,29 +92,3 @@ class BoxHeads(nn.Module):
 
 
 # ---------------------------------------------------------------- targets / losses
-def center_target_box(box, centers, valid, grid_hw):
-    """GUI-Actor style: mass on every patch covered by the GT box, proportional to the covered area fraction."""
-    gh, gw = grid_hw[:, 0].float()[:, None], grid_hw[:, 1].float()[:, None]
-    hx, hy = 0.5 / gw, 0.5 / gh
-    ox = (torch.minimum(centers[..., 0] + hx, box[:, 2:3]) - torch.maximum(centers[..., 0] - hx, box[:, 0:1])).clamp(min=0)
-    oy = (torch.minimum(centers[..., 1] + hy, box[:, 3:4]) - torch.maximum(centers[..., 1] - hy, box[:, 1:2])).clamp(min=0)
-    t = (ox * oy).masked_fill(~valid, 0)
-    t = t / t.sum(-1, keepdim=True).clamp(min=1e-12)
-    return t
-
-
-
-def edge_targets(box, pc, cfg, K):
-    offs = torch.stack([pc[:, 0] - box[:, 0], pc[:, 1] - box[:, 1], box[:, 2] - pc[:, 0], box[:, 3] - pc[:, 1]], -1)
-    offs = offs.clamp(cfg.edge_lo, cfg.edge_hi)
-    bw = (cfg.edge_hi - cfg.edge_lo) / (K - 1)
-    centers = torch.linspace(cfg.edge_lo, cfg.edge_hi, K, device=box.device)
-    t = torch.exp(-0.5 * ((centers - offs[..., None]) / (cfg.edge_sigma_bins * bw)) ** 2)
-    return t / t.sum(-1, keepdim=True), offs
-
-
-def cramer(logits, target):
-    """Squared CDF L2 distance summed over bins, mean over (M,4)."""
-    cdf_p = logits.softmax(-1).cumsum(-1)
-    cdf_t = target.cumsum(-1)
-    return ((cdf_p - cdf_t) ** 2).sum(-1).mean()

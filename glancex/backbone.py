@@ -191,7 +191,7 @@ class GlanceXBackbone(torch.nn.Module):
             vis_index = torch.arange(M, device=xt.device)
             q_valid = qv & ~flags[0]                                         # the block's non-image tokens
         r = hq[torch.arange(M, device=hq.device), last]
-        # q_tok / q_valid / r_idx: the request's tokens (for the two-way decoder)
+        # q_tok / q_valid / r_idx: the request tokens
         return dict(r=r, vis=vis, vis_index=vis_index, q_tok=hq, q_valid=q_valid, r_idx=last)
 
     # ------------------------------------------------------------------ image cache (image_first)

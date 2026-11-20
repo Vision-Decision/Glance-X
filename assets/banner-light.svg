@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300" width="1200" height="300" role="img" aria-label="Glance-X">
-  <title>Glance-X: one model, three ways to look</title>
+  <title>Glance-X-Lite</title>
   <defs>
     <mask id="gap" maskUnits="userSpaceOnUse" x="0" y="0" width="128" height="128">
       <rect width="128" height="128" fill="#fff"/>
@@ -17,7 +17,7 @@
   </g>
   <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Helvetica, Arial, sans-serif">
     <text x="300" y="128" font-size="92" font-weight="800" letter-spacing="-2" fill="#16213A">Glance<tspan fill="#E8743B">-</tspan><tspan fill="#2F6FE0">X</tspan></text>
-    <text x="304" y="178" font-size="27" font-weight="500" fill="#5B6475">One model, three ways to look: find any object from a text request.</text>
+    <text x="304" y="178" font-size="27" font-weight="500" fill="#5B6475">Small and two-way: find any object from a text request.</text>
   <g transform="translate(300,214)">
     <rect width="220" height="40" rx="20" fill="#F3F5F9" stroke="#DCE1EA"/>
     <circle cx="22" cy="20" r="6" fill="#E8743B"/><circle cx="198" cy="20" r="6" fill="#2F6FE0"/>
@@ -31,7 +31,7 @@
   <g transform="translate(772,214)">
     <rect width="180" height="40" rx="20" fill="#F3F5F9" stroke="#DCE1EA"/>
     <circle cx="22" cy="20" r="6" fill="#E8743B"/><circle cx="158" cy="20" r="6" fill="#2F6FE0"/>
-    <text x="90.0" y="26" text-anchor="middle" font-size="17" font-weight="600" fill="#16213A">joint  ⇄</text>
+    <text x="90.0" y="26" text-anchor="middle" font-size="17" font-weight="600" fill="#16213A">0.8B · lite</text>
   </g>
   </g>
 </svg>

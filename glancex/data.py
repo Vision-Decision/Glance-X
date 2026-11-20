@@ -147,11 +147,3 @@ def collate(items, tok, cfg, mode, q_per_image=0, merge=2):
         n_tokens=int(img_valid.sum() + txt_valid.sum()), mode=mode,
         meta=[dict(rec=items[b]["rec"], q=items[b]["qs"][j], orig_wh=items[b]["orig_wh"]) for b, j in sel],
     )
-
-
-def collate_train(items, tok, cfg):
-    """One direction per batch, drawn from cfg.mode_probs ("i2t,t2i,bi" weights)."""
-    w = [float(x) for x in cfg.mode_probs.split(",")]
-    mode = random.choices(["i2t", "t2i", "bi"], weights=w)[0]
-    k = cfg.i2t_q_per_image if mode == "i2t" else cfg.pair_q_per_image
-    return collate(items, tok, cfg, mode, q_per_image=k)

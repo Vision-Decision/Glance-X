@@ -10,7 +10,7 @@
 <rect x="222" y="66" width="22" height="22" rx="5" fill="#E8743B"/>
 <rect x="248" y="66" width="22" height="22" rx="5" fill="#E8743B"/>
 <rect x="274" y="66" width="22" height="22" rx="5" fill="#E8743B"/>
-<text x="316" y="83" font-size="15" font-weight="400" fill="#16213A" text-anchor="start">image tokens  (Qwen3.5 vision tower, frozen)</text>
+<text x="316" y="83" font-size="15" font-weight="400" fill="#16213A" text-anchor="start">image tokens  (Qwen3.5-0.8B vision tower, frozen)</text>
 <rect x="700" y="66" width="22" height="22" rx="5" fill="#2F6FE0"/>
 <rect x="726" y="66" width="22" height="22" rx="5" fill="#2F6FE0"/>
 <rect x="752" y="66" width="22" height="22" rx="5" fill="#2F6FE0"/>
@@ -20,7 +20,7 @@
 <text x="860" y="83" font-size="15" font-weight="400" fill="#16213A" text-anchor="start">request tokens + readout R</text>
 <rect x="24" y="118" width="1152" height="128" rx="14" fill="#F6F8FB" stroke="#DCE1EA"/>
 <text x="44" y="146" font-size="18" font-weight="700" fill="#16213A" text-anchor="start">Modality stage</text>
-<text x="190" y="146" font-size="15" font-weight="500" fill="#5B6475" text-anchor="start">layers 1 … K   (K = 8)</text>
+<text x="190" y="146" font-size="15" font-weight="500" fill="#5B6475" text-anchor="start">layers 1 … K   (K = 2)</text>
 <rect x="44" y="164" width="520" height="62" rx="10" fill="#FBE3D6"/>
 <text x="64" y="191" font-size="16" font-weight="700" fill="#E8743B" text-anchor="start">Image stream</text>
 <text x="64" y="213" font-size="14" font-weight="400" fill="#16213A" text-anchor="start">reads only itself · computed once per image</text>
@@ -29,10 +29,10 @@
 <text x="656" y="213" font-size="14" font-weight="400" fill="#16213A" text-anchor="start">reads only itself · computed once per request</text>
 <rect x="24" y="266" width="1152" height="248" rx="14" fill="#F6F8FB" stroke="#DCE1EA"/>
 <text x="44" y="294" font-size="18" font-weight="700" fill="#16213A" text-anchor="start">Fusion stage</text>
-<text x="174" y="294" font-size="15" font-weight="500" fill="#5B6475" text-anchor="start">layers K+1 … 32   ·   pick one direction per call</text>
-<rect x="44" y="310" width="356" height="188" rx="12" fill="#FFFFFF" stroke="#DCE1EA"/>
+<text x="174" y="294" font-size="15" font-weight="500" fill="#5B6475" text-anchor="start">layers K+1 … 24   ·   pick one direction per call</text>
+<rect x="44" y="310" width="546" height="188" rx="12" fill="#FFFFFF" stroke="#DCE1EA"/>
 <text x="62" y="340" font-size="17" font-weight="700" fill="#16213A" text-anchor="start">image_first</text>
-<text x="382" y="340" font-size="15" font-weight="600" fill="#5B6475" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">image → text</text>
+<text x="572" y="340" font-size="15" font-weight="600" fill="#5B6475" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">image → text</text>
 <text x="62" y="378" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">prefix</text>
 <rect x="126" y="362" width="22" height="22" rx="5" fill="#E8743B"/>
 <rect x="152" y="362" width="22" height="22" rx="5" fill="#E8743B"/>
@@ -49,43 +49,27 @@
 <text x="242" y="412" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">× N in parallel</text>
 <text x="62" y="446" font-size="13" font-weight="400" fill="#5B6475" text-anchor="start">each block reads the shared prefix</text>
 <text x="62" y="470" font-size="15" font-weight="700" fill="#16213A" text-anchor="start">one image, many requests</text>
-<text x="62" y="489" font-size="13.5" font-weight="400" fill="#5B6475" text-anchor="start">image computed once, requests run in parallel</text>
-<rect x="420" y="310" width="356" height="188" rx="12" fill="#FFFFFF" stroke="#DCE1EA"/>
-<text x="438" y="340" font-size="17" font-weight="700" fill="#16213A" text-anchor="start">text_first</text>
-<text x="758" y="340" font-size="15" font-weight="600" fill="#5B6475" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">text → image</text>
-<text x="438" y="378" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">prefix</text>
-<rect x="502" y="362" width="22" height="22" rx="5" fill="#2F6FE0"/>
-<rect x="528" y="362" width="22" height="22" rx="5" fill="#2F6FE0"/>
-<rect x="554" y="362" width="22" height="22" rx="5" fill="#2F6FE0"/>
-<rect x="580" y="362" width="22" height="22" rx="5" fill="#2F6FE0"/>
-<text x="438" y="412" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">block</text>
-<rect x="496" y="390" width="164" height="34" rx="8" fill="none" stroke="#5B6475" stroke-dasharray="4 3"/>
-<rect x="500" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="526" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="552" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="578" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="604" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="630" y="396" width="22" height="22" rx="5" fill="#16213A"/>
-<text x="670" y="412" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">× N in parallel</text>
-<text x="438" y="446" font-size="13" font-weight="400" fill="#5B6475" text-anchor="start">each block reads the shared prefix</text>
-<text x="438" y="470" font-size="15" font-weight="700" fill="#16213A" text-anchor="start">one request, many images</text>
-<text x="438" y="489" font-size="13.5" font-weight="400" fill="#5B6475" text-anchor="start">the request is fixed, images run in parallel</text>
-<rect x="796" y="310" width="356" height="188" rx="12" fill="#FFFFFF" stroke="#DCE1EA"/>
-<text x="814" y="340" font-size="17" font-weight="700" fill="#16213A" text-anchor="start">joint</text>
-<text x="1134" y="340" font-size="15" font-weight="600" fill="#5B6475" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">image ⇄ text</text>
-<text x="814" y="395" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">block</text>
-<rect x="872" y="373" width="190" height="34" rx="8" fill="none" stroke="#5B6475" stroke-dasharray="4 3"/>
-<rect x="876" y="379" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="902" y="379" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="928" y="379" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="954" y="379" width="22" height="22" rx="5" fill="#E8743B"/>
-<rect x="980" y="379" width="22" height="22" rx="5" fill="#2F6FE0"/>
-<rect x="1006" y="379" width="22" height="22" rx="5" fill="#2F6FE0"/>
-<rect x="1032" y="379" width="22" height="22" rx="5" fill="#16213A"/>
-<path d="M888 414q70 22 140 0" fill="none" stroke="#5B6475" stroke-width="2" marker-start="url(#ahslight)" marker-end="url(#ahlight)"/>
-<text x="814" y="446" font-size="13" font-weight="400" fill="#5B6475" text-anchor="start">attention runs both ways inside the block</text>
-<text x="814" y="470" font-size="15" font-weight="700" fill="#16213A" text-anchor="start">one image, one request</text>
-<text x="814" y="489" font-size="13.5" font-weight="400" fill="#5B6475" text-anchor="start">image and request read each other: most accurate</text>
+<text x="62" y="489" font-size="13.5" font-weight="400" fill="#5B6475" text-anchor="start">image cached once, every request reads it</text>
+<rect x="610" y="310" width="546" height="188" rx="12" fill="#FFFFFF" stroke="#DCE1EA"/>
+<text x="628" y="340" font-size="17" font-weight="700" fill="#16213A" text-anchor="start">text_first</text>
+<text x="1138" y="340" font-size="15" font-weight="600" fill="#5B6475" text-anchor="end" font-family="ui-monospace, SFMono-Regular, Menlo, monospace">text → image</text>
+<text x="628" y="378" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">prefix</text>
+<rect x="692" y="362" width="22" height="22" rx="5" fill="#2F6FE0"/>
+<rect x="718" y="362" width="22" height="22" rx="5" fill="#2F6FE0"/>
+<rect x="744" y="362" width="22" height="22" rx="5" fill="#2F6FE0"/>
+<rect x="770" y="362" width="22" height="22" rx="5" fill="#2F6FE0"/>
+<text x="628" y="412" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">block</text>
+<rect x="686" y="390" width="164" height="34" rx="8" fill="none" stroke="#5B6475" stroke-dasharray="4 3"/>
+<rect x="690" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
+<rect x="716" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
+<rect x="742" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
+<rect x="768" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
+<rect x="794" y="396" width="22" height="22" rx="5" fill="#E8743B"/>
+<rect x="820" y="396" width="22" height="22" rx="5" fill="#16213A"/>
+<text x="860" y="412" font-size="13" font-weight="600" fill="#5B6475" text-anchor="start">× N in parallel</text>
+<text x="628" y="446" font-size="13" font-weight="400" fill="#5B6475" text-anchor="start">each block reads the shared prefix</text>
+<text x="628" y="470" font-size="15" font-weight="700" fill="#16213A" text-anchor="start">one request, many images</text>
+<text x="628" y="489" font-size="13.5" font-weight="400" fill="#5B6475" text-anchor="start">the image reads the request: better recall</text>
 <rect x="24" y="534" width="1152" height="82" rx="14" fill="#F6F8FB" stroke="#DCE1EA"/>
 <text x="44" y="562" font-size="18" font-weight="700" fill="#16213A" text-anchor="start">Heads</text>
 <text x="44" y="590" font-size="14" font-weight="400" fill="#5B6475" text-anchor="start">on R + image tokens</text>

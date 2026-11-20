@@ -1,6 +1,7 @@
 """Evaluate a Glance-X checkpoint in one direction.
 
-python -m glancex.evaluate --ckpt CKPT --mode image_first|text_first|joint --sets refcoco_val,refcocog_val,grefcoco_val_merged \
+python -m glancex.evaluate --ckpt Vision-Decision/Glance-X-Lite --mode image_first|text_first \
+    --sets refcoco_val,refcocog_val,grefcoco_val_merged \
     [--glance_data GLANCE_DATA_VAL.jsonl] [--limit_images 300] --out res.json
 
 Two groups of results: the original benchmarks (RefCOCO / RefCOCOg / gRefCOCO, human labels) and our own
@@ -16,10 +17,10 @@ import torch
 
 from ._box import box_iou_giou
 from .backbone import canonical_mode
-from .build import build, load_ckpt
+from .build import build, load_ckpt, load_state
 from .config import Config
 from .data import RecordDataset, collate
-from .train import forward_batch, to_dev
+from .forward import forward_batch, to_dev
 
 
 def auroc(p, y):
@@ -105,7 +106,8 @@ def main():
     ap.add_argument("--ckpt", required=True)
     ap.add_argument("--mode", required=True, help="image_first | text_first | joint")
     ap.add_argument("--sets", default="refcoco_val,refcocog_val,grefcoco_val_merged")
-    ap.add_argument("--prep_dir", default="data/prep")
+    ap.add_argument("--prep_dir", default="data/prep", help="folder with eval_<set>.jsonl records")
+    ap.add_argument("--image_root", default="data/images/coco_train2014", help="COCO train2014 images")
     ap.add_argument("--glance_data", "--diag", dest="glance_data", default="",
                     help="Glance-Data eval set (held-out images, pipeline-generated)")
     ap.add_argument("--limit_images", type=int, default=0)
@@ -115,17 +117,17 @@ def main():
     a = ap.parse_args()
     a.mode = canonical_mode(a.mode)
     torch.backends.cuda.enable_cudnn_sdp(False)
-    sd = torch.load(a.ckpt, map_location="cpu", weights_only=False)
+    sd = load_state(a.ckpt)                                   # Hugging Face id, exported folder or training .pt
     cfg = Config().update(sd["cfg"]).update(dict(pad_img_to=0, pad_txt_to=0, pad_txt_block_to=0, pad_t2i_block_to=0,
                                                  pad_bi_block_to=0))
     net, heads, proc = build(cfg, "cuda")
-    load_ckpt(a.ckpt, net, heads)
+    load_ckpt(sd, net, heads)
     net.eval(); heads.eval()
     ipb = a.images_per_batch or (8 if a.mode == "i2t" else 1)
-    res = dict(ckpt=a.ckpt, step=sd["extra"].get("step"), mode=a.mode, sets={})  # sets: originals + "glance_data"
+    res = dict(ckpt=a.ckpt, step=sd.get("extra", {}).get("step"), mode=a.mode, sets={})  # sets: originals + "glance_data"
     files = [(n, f"{a.prep_dir}/eval_{n}.jsonl") for n in a.sets.split(",") if n] + ([("glance_data", a.glance_data)] if a.glance_data else [])
     for name, path in files:
-        ds = RecordDataset(path, cfg.image_root, proc, cfg, train=False)
+        ds = RecordDataset(path, a.image_root, proc, cfg, train=False)
         t0 = time.time()
         rows = predict(net, heads, ds, a.mode, ipb, a.limit_images, a.obj_thr)
         s = summarize(rows)

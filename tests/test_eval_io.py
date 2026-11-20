@@ -1,7 +1,11 @@
 """Metrics and the exported-weights round trip (CPU)."""
 import torch
 
-from glancex.build import export_state, load_state
+import json
+
+from safetensors.torch import save_file
+
+from glancex.build import load_state
 from glancex.evaluate import auroc, f1_sets
 
 
@@ -19,11 +23,12 @@ def test_f1_sets():
     assert abs(f1_sets([[0, 0, 10, 10], [0, 0, 10, 10]], gt) - 0.5) < 1e-9     # a duplicate is not a second hit
 
 
-def test_export_roundtrip(tmp_path):
-    sd = dict(cfg=dict(bidir_k=8, model_id="Qwen/Qwen3.5-4B-Base"),
-              lora={"a.lora_A.weight": torch.randn(4, 3)}, heads={"presence.0.weight": torch.randn(2, 2)})
-    export_state(sd, tmp_path, dict(out_dir="outputs/x"))
+def test_load_exported_folder(tmp_path):
+    lora, heads = {"a.lora_A.weight": torch.randn(4, 3)}, {"presence.0.weight": torch.randn(2, 2)}
+    json.dump(dict(bidir_k=2, model_id="Qwen/Qwen3.5-0.8B-Base"), open(tmp_path / "glancex_config.json", "w"))
+    save_file(lora, str(tmp_path / "adapter_model.safetensors"))
+    save_file(heads, str(tmp_path / "heads.safetensors"))
     back = load_state(str(tmp_path))
-    assert back["cfg"]["bidir_k"] == 8 and back["cfg"]["out_dir"] == "outputs/x"
-    assert torch.equal(back["lora"]["a.lora_A.weight"], sd["lora"]["a.lora_A.weight"])
-    assert torch.equal(back["heads"]["presence.0.weight"], sd["heads"]["presence.0.weight"])
+    assert back["cfg"]["bidir_k"] == 2
+    assert torch.equal(back["lora"]["a.lora_A.weight"], lora["a.lora_A.weight"])
+    assert torch.equal(back["heads"]["presence.0.weight"], heads["presence.0.weight"])

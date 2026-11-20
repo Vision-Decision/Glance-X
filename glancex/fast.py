@@ -57,7 +57,7 @@ class GraphRunner:
             rv, rc = s["vis_valid"], s["centers"]
         else:
             rv, rc = s["vis_valid"][q_img], s["centers"][q_img]
-        out = self.heads(o["r"], o["vis"], rv, rc, o["vis_index"], q_tok=o["q_tok"], q_valid=o["q_valid"], r_idx=o["r_idx"])
+        out = self.heads(o["r"], o["vis"], rv, rc, o["vis_index"])
         mb, ms, mk = self.heads.multi_tensors(o["r"], o["vis"], rv, rc, o["vis_index"], out, thr=thr)
         return dict(p=out["presence_logit"].float().sigmoid(), piou=out["iou_logit"].float().sigmoid(),
                     box=out["box_pred"].float().clamp(0, 1), mb=mb, ms=ms, mk=mk)

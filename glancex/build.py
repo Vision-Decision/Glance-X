@@ -2,7 +2,7 @@
 import os
 
 import torch
-from peft import LoraConfig, get_peft_model_state_dict, inject_adapter_in_model, set_peft_model_state_dict
+from peft import LoraConfig, inject_adapter_in_model, set_peft_model_state_dict
 from transformers import AutoModelForImageTextToText, AutoProcessor
 
 from .backbone import GlanceXBackbone
@@ -36,15 +36,6 @@ def build(cfg, device="cuda", lora=True, dtype=torch.bfloat16):
     return net, heads, proc
 
 
-def trainable_state(net, heads):
-    return dict(lora=get_peft_model_state_dict(net.hf), heads=heads.state_dict())
-
-
-def save_ckpt(path, net, heads, cfg, extra=None):
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    torch.save(dict(**trainable_state(net, heads), cfg=cfg.__dict__, extra=extra or {}), path)
-
-
 def load_ckpt(path_or_state, net, heads):
     """path_or_state: a training checkpoint (.pt) or a dict with "lora" and "heads" (see load_state)."""
     sd = path_or_state if isinstance(path_or_state, dict) else torch.load(path_or_state, map_location="cpu",
@@ -53,13 +44,7 @@ def load_ckpt(path_or_state, net, heads):
         res = set_peft_model_state_dict(net.hf, sd["lora"])
         bad = [k for k in getattr(res, "unexpected_keys", []) if "lora" in k]
         assert not bad, f"unexpected LoRA keys: {bad[:5]}"
-    missing, unexpected = heads.load_state_dict(sd["heads"], strict=False)
-    assert not unexpected, f"unexpected head keys: {unexpected[:5]}"
-    new = ("dec.", "dc_", "do_q", "do_k", "dpres", "dedge", "diou")
-    bad = [k for k in missing if not k.startswith(new)]
-    assert not bad, f"missing head keys: {bad[:5]}"
-    if missing:   # an older checkpoint without the two-way decoder: the new parts keep their (identity) init
-        print(f"[load] {len(missing)} new head tensors not in the checkpoint (two-way decoder): kept at init")
+    heads.load_state_dict(sd["heads"])
     return sd
 
 
@@ -79,15 +64,3 @@ def load_state(src, revision=None):
         src = snapshot_download(src, revision=revision, allow_patterns=[CONFIG_FILE, LORA_FILE, HEADS_FILE])
     return dict(cfg=json.load(open(os.path.join(src, CONFIG_FILE))), lora=load_file(os.path.join(src, LORA_FILE)),
                 heads=load_file(os.path.join(src, HEADS_FILE)))
-
-
-def export_state(sd, out_dir, cfg_overrides=None):
-    """Write an exported folder (config JSON + two safetensors files) from a training checkpoint dict."""
-    import json
-
-    from safetensors.torch import save_file
-    os.makedirs(out_dir, exist_ok=True)
-    cfg = dict(sd["cfg"], **(cfg_overrides or {}))
-    json.dump(cfg, open(os.path.join(out_dir, CONFIG_FILE), "w"), indent=1)
-    save_file({k: v.contiguous() for k, v in sd["lora"].items()}, os.path.join(out_dir, LORA_FILE))
-    save_file({k: v.contiguous() for k, v in sd["heads"].items()}, os.path.join(out_dir, HEADS_FILE))

@@ -1,0 +1,12 @@
+{
+ "records": "glance-data/aug_val.jsonl",
+ "n_images": 256,
+ "search": "a giraffe eating from someone's hand",
+ "zoom_requests": [
+  "the photographer on the left",
+  "穿绿衣伸手喂长颈鹿的女子",
+  "the people",
+  "something to take photos with",
+  "woman in red shirt reaching to the giraffe"
+ ]
+}

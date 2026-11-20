@@ -7,7 +7,6 @@ import torch
 from glancex.backbone import canonical_mode, pack
 from glancex.config import Config
 from glancex.data import collate, resize_dims, targets_of
-from glancex.heads import obj_target
 
 
 def test_mode_aliases():
@@ -88,15 +87,3 @@ def test_targets_of():
     two = dict(present=True, box=None, boxes=[[0, 0, 10, 10], [50, 25, 100, 50]])
     assert len(targets_of(two, 100, 50, 16)) == 2
     assert targets_of(dict(present=False, box=[0, 0, 1, 1]), 100, 50, 16) == []
-
-
-def test_obj_target_marks_every_target():
-    gh = gw = 4
-    ii, jj = torch.meshgrid(torch.arange(gh), torch.arange(gw), indexing="ij")
-    centers = torch.stack([(jj.flatten() + 0.5) / gw, (ii.flatten() + 0.5) / gh], -1)[None]   # [1,16,2]
-    valid = torch.ones(1, 16, dtype=torch.bool)
-    boxes = torch.tensor([[[0.0, 0.0, 0.5, 0.5], [0.5, 0.5, 1.0, 1.0]]])
-    t = obj_target(boxes, torch.tensor([2]), centers, valid, shrink=0.5).view(gh, gw)
-    assert t[0:2, 0:2].sum() >= 1 and t[2:4, 2:4].sum() >= 1     # both targets have a positive patch
-    assert t[0:2, 2:4].sum() == 0 and t[2:4, 0:2].sum() == 0     # nothing off-target
-    assert obj_target(boxes, torch.tensor([0]), centers, valid).sum() == 0

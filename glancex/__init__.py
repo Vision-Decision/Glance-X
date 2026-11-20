@@ -1,5 +1,5 @@
-"""Glance-X: one model, three ways to look. Find objects from a text request: image-first, text-first or joint."""
-__version__ = "0.2.0"
+"""Glance-X-Lite: find objects from a text request, image-first (cacheable) or text-first."""
+__version__ = "0.3.0"
 
 
 def __getattr__(name):  # keep `import glancex` light: torch / transformers load on first use

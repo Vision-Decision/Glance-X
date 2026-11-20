@@ -16,7 +16,7 @@
   },
   {
    "kind": "find",
-   "mode": "joint",
+   "mode": "image_first",
    "image": "COCO_train2014_000000314051.jpg",
    "multi": true,
    "requests": [
@@ -28,7 +28,7 @@
   },
   {
    "kind": "find",
-   "mode": "joint",
+   "mode": "image_first",
    "image": "COCO_train2014_000000414850.jpg",
    "multi": true,
    "requests": [

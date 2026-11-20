@@ -4,8 +4,9 @@ Notes for coding agents and contributors working in this repo.
 
 ## What this is
 
-Glance-X is a referring-expression box model on Qwen3.5-4B-Base. It has one backbone with three directions
-(`image_first` / `text_first` / `joint`). Start with `docs/ARCHITECTURE.md`.
+This repository is the inference and evaluation package for Glance-X-Lite, a 0.8B referring-expression box model
+(Qwen3.5-0.8B-Base) with two directions, `image_first` (with an image cache) and `text_first`. Start with
+`docs/ARCHITECTURE.md`. Training and data code live in Glanece-Training, not here.
 
 ## Layout
 
@@ -23,7 +24,7 @@ Glance-X is a referring-expression box model on Qwen3.5-4B-Base. It has one back
 pip install -e ".[dev]"
 ruff check glancex scripts demo tests
 pytest -q                                      # CPU only, no weights needed
-python scripts/test_equivalence.py --model_id Qwen/Qwen3.5-4B-Base   # GPU
+python scripts/test_equivalence.py --model_id Qwen/Qwen3.5-0.8B-Base   # GPU
 ```
 
 ## Rules
@@ -31,5 +32,5 @@ python scripts/test_equivalence.py --model_id Qwen/Qwen3.5-4B-Base   # GPU
 - Never commit weights (`*.pt`, `*.safetensors`), data, tokens, or machine-specific paths. CI greps for keys.
 - Every number in the README must come from a real run. The demo video is rendered from real predictions
   (`demo/predictions.json`).
-- Weights are published on Hugging Face (`Vision-Decision/Glance-X-4B`) with `scripts/export_hf.py`. The model
-  card is `hf/README.md`.
+- Weights are published on Hugging Face (`Vision-Decision/Glance-X-Lite`); the model card is `hf/README.md`.
+  Exporting a checkpoint is done in Glanece-Training (`scripts/export_hf.py`).

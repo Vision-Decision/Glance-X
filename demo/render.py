@@ -346,15 +346,15 @@ def main():
     logo = on_bg(svg_png(a.logo, 40 * S))
     banner = on_bg(svg_png(a.banner, 900 * S))
     pred = json.load(open(a.pred))
-    frames = card(fonts, banner, [("Find any object from a text request — three ways.", 26, FG),
-                                  ("real outputs of Glance-X-4B (K=8) on held-out images", 18, MUTED)], total=3.0)
+    frames = card(fonts, banner, [("Find any object from a text request — both ways.", 26, FG),
+                                  ("real outputs of Glance-X-Lite (0.8B) on held-out images", 18, MUTED)], total=3.0)
     for sc in pred:
         if sc["kind"] == "search":
             frames += scene_search(sc, fonts, logo, a.image_root)
         else:
             frames += scene_ask(sc, fonts, logo, a.image_root, title=sc.get("title"))
     frames += card(fonts, banner, [("github.com/Vision-Decision/Glance-X", 26, FG),
-                                   ("built on Qwen3.5-4B-Base · trained on RefCOCO family + Glance-Data", 18, MUTED),
+                                   ("built on Qwen3.5-0.8B-Base · trained on RefCOCO family + Glance-Data", 18, MUTED),
                                    ("images: MS COCO (cocodataset.org), Flickr terms of use", 15, DIM)], total=3.2)
     os.makedirs(os.path.dirname(a.out) or ".", exist_ok=True)
     p = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
